@@ -1,0 +1,111 @@
+name: Build & Publish OpenWrt IPK
+
+on:
+  schedule:
+    # 每天北京时间 10:00 (UTC 02:00) 自动检查懒猫官方最新版本
+    - cron: '0 2 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '强制重新构建并更新当前版本的 Release'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check upstream Lazycat hclient-cli version
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild }}
+        run: |
+          set -euo pipefail
+          MANIFEST="$(curl -fsSL https://dl.lazycatmicroserver.com/hclient-cli/latest-version.json)"
+          UPSTREAM_VER="$(echo "$MANIFEST" | jq -r '.version')"
+          if [ -z "$UPSTREAM_VER" ] || [ "$UPSTREAM_VER" = "null" ]; then
+            echo "Failed to fetch upstream version" >&2
+            exit 1
+          fi
+          echo "upstream_version=$UPSTREAM_VER" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=${UPSTREAM_VER#v}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$UPSTREAM_VER" >/dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT_NAME" = "schedule" ] && [ "$FORCE_REBUILD" != "true" ]; then
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              echo "Release $UPSTREAM_VER already exists on scheduled run; skipping build."
+              exit 0
+            fi
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download binaries (amd64 / arm64 / riscv64) and build OpenWrt IPK packages
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          chmod +x ./scripts/ipkg-build ./scripts/build-ipk.sh
+          ./scripts/build-ipk.sh
+
+      - name: Generate Release Notes
+        if: steps.check.outputs.should_build == 'true'
+        run: |
+          VER="${{ steps.check.outputs.upstream_version }}"
+          PVER="${{ steps.check.outputs.pkg_version }}"
+          cat > dist/RELEASE_NOTES.md << EOF
+          ## 懒猫微服 OpenWrt 客户端 + LuCI 界面 (${VER})
+
+          本版本由 GitHub Actions 自动从懒猫官方源 (\`https://dl.lazycatmicroserver.com/hclient-cli/latest-version.json\`) 拉取 **amd64 / arm64 / riscv64** 三架构服务端二进制并打包生成。
+
+          ### 📦 架构与安装包对照表
+
+          | 路由器架构 | 推荐安装包（全子架构通用，含客户端+服务+LuCI） | 标准架构包名 |
+          | :--- | :--- | :--- |
+          | **amd64 (x86_64 软路由)** | \`hclient-cli_${PVER}-1_linux_amd64.ipk\` | \`hclient-cli_${PVER}-1_x86_64.ipk\` |
+          | **arm64 (aarch64 全系)** | \`hclient-cli_${PVER}-1_linux_arm64.ipk\` | \`hclient-cli_${PVER}-1_aarch64_generic.ipk\` |
+          | **riscv64 (RISC-V 64位)** | \`hclient-cli_${PVER}-1_linux_riscv64.ipk\` | \`hclient-cli_${PVER}-1_riscv64.ipk\` |
+          | **仅 LuCI 界面包（可选）** | \`luci-app-hclient_${PVER}-1_all.ipk\` | - |
+
+          > 💡 **提示**：针对 ARM64（如 MT7981/MT7986 `aarch64_cortex-a53`、RK3588/R4S `aarch64_generic`、树莓派 `aarch64_cortex-a72`）及 RISC-V 不同子架构的 OpenWrt 固件，直接下载安装 \`*_linux_arm64.ipk\` / \`*_linux_riscv64.ipk\` 即可免去 \`--force-architecture\`，安装脚本会自动通过 \`uname -m\` 校验 CPU 架构。
+
+          ### 🚀 快速安装
+
+          ```bash
+          opkg update
+          opkg install /tmp/hclient-cli_${PVER}-1_linux_amd64.ipk
+          ```
+
+          ### 🔒 SHA256 校验值
+          \`\`\`
+          $(cat dist/SHA256SUMS)
+          \`\`\`
+          EOF
+
+      - name: Publish or Update GitHub Release
+        if: steps.check.outputs.should_build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.check.outputs.upstream_version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.ipk dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --title "Lazycat HClient OpenWrt ${TAG}" --notes-file dist/RELEASE_NOTES.md
+          else
+            gh release create "$TAG" dist/*.ipk dist/SHA256SUMS \
+              --title "Lazycat HClient OpenWrt ${TAG}" \
+              --notes-file dist/RELEASE_NOTES.md \
+              --latest
+          fi

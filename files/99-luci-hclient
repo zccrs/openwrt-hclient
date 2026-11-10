@@ -1,0 +1,17 @@
+#!/bin/sh
+
+if [ -d /usr/share/luci/menu.d ] && [ -d /www/luci-static/resources/view ]; then
+	rm -f /usr/lib/lua/luci/controller/hclient.lua 2>/dev/null || true
+fi
+
+mkdir -p /etc/hclient/state /root/.config
+if [ ! -L /root/.config/hportal-client ]; then
+	ln -sf /etc/hclient/state /root/.config/hportal-client 2>/dev/null || true
+fi
+
+/etc/init.d/hclient enable >/dev/null 2>&1 || true
+/etc/init.d/hclient start >/dev/null 2>&1 || true
+/etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null || true
+
+exit 0

@@ -1,0 +1,323 @@
+#!/bin/sh
+
+PROG="${HCLIENT_PROG:-/usr/bin/hclient-cli}"
+STATE_DIR="${HCLIENT_STATE_DIR:-/etc/hclient/state}"
+export HOME=/root
+export HCLIENT_CLI_CFG="$STATE_DIR"
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+uci_get() {
+	local key="$1"
+	local def="$2"
+	if command -v uci >/dev/null 2>&1; then
+		local val
+		val="$(uci -q get "hclient.config.$key" 2>/dev/null)"
+		if [ -n "$val" ]; then
+			printf '%s' "$val"
+			return
+		fi
+	fi
+	printf '%s' "$def"
+}
+
+json_escape() {
+	awk '
+	BEGIN { ORS="" }
+	{
+		gsub(/\\/, "\\\\")
+		gsub(/"/, "\\\"")
+		gsub(/\r/, "")
+		gsub(/\t/, "\\t")
+		if (NR > 1) printf "\\n"
+		printf "%s", $0
+	}'
+}
+
+parse_boxes_json() {
+	awk '
+	function esc(s) {
+		gsub(/\\/, "\\\\", s)
+		gsub(/"/, "\\\"", s)
+		gsub(/\r/, "", s)
+		gsub(/\t/, "\\t", s)
+		return s
+	}
+	function flush_box() {
+		if (id != "") {
+			if (count > 0) printf ","
+			printf "{\"id\":\"%s\",\"name\":\"%s\",\"status\":\"%s\",\"reason\":\"%s\",\"user\":\"%s\",\"is_default\":%s}",
+				esc(id), esc(name), esc(status), esc(reason), esc(user), (def == "true" ? "true" : "false")
+			count++
+		}
+		id=""; name=""; status=""; reason=""; user=""; def="false"
+	}
+	BEGIN {
+		count=0
+		id=""; name=""; status=""; reason=""; user=""; def="false"
+		printf "["
+	}
+	/^Box ID:[[:space:]]*/ {
+		flush_box()
+		sub(/^Box ID:[[:space:]]*/, "")
+		id=$0
+		next
+	}
+	/^Name:[[:space:]]*/ {
+		sub(/^Name:[[:space:]]*/, "")
+		name=$0
+		next
+	}
+	/^Status:[[:space:]]*/ {
+		sub(/^Status:[[:space:]]*/, "")
+		status=$0
+		next
+	}
+	/^Reason:[[:space:]]*/ {
+		sub(/^Reason:[[:space:]]*/, "")
+		reason=$0
+		next
+	}
+	/^User:[[:space:]]*/ {
+		sub(/^User:[[:space:]]*/, "")
+		user=$0
+		next
+	}
+	/^Default:[[:space:]]*/ {
+		sub(/^Default:[[:space:]]*/, "")
+		def=$0
+		next
+	}
+	END {
+		flush_box()
+		printf "]"
+	}'
+}
+
+ADDR="$(uci_get address "tcp://127.0.0.1:61091")"
+run_cli() {
+	"$PROG" -root -address "$ADDR" "$@"
+}
+
+ACTION="$1"
+shift 2>/dev/null || true
+
+case "$ACTION" in
+	status)
+		PID="$(pidof hclient-cli 2>/dev/null | awk '{print $1}')"
+		if [ -z "$PID" ]; then
+			PID="$(ps w 2>/dev/null | awk '/[h]client-cli.*daemon/{print $1; exit}')"
+		fi
+		if [ -z "$PID" ]; then
+			PID="$(ps 2>/dev/null | awk '/[h]client-cli.*daemon/{print $1; exit}')"
+		fi
+		if [ -z "$PID" ] && [ -f "$STATE_DIR/hclient-cli-daemon.json" ]; then
+			CAND_PID="$(sed -n 's/.*"pid":[[:space:]]*\([0-9]*\).*/\1/p' "$STATE_DIR/hclient-cli-daemon.json" 2>/dev/null | head -n 1)"
+			if [ -n "$CAND_PID" ] && kill -0 "$CAND_PID" 2>/dev/null; then
+				PID="$CAND_PID"
+			fi
+		fi
+
+		RUNNING="false"
+		[ -n "$PID" ] && RUNNING="true"
+		BOX_RAW="$(run_cli box list 2>/dev/null)"
+		if [ $? -eq 0 ]; then
+			RUNNING="true"
+			BOXES_JSON="$(printf '%s\n' "$BOX_RAW" | parse_boxes_json)"
+		else
+			BOXES_JSON="[]"
+		fi
+		[ -z "$BOXES_JSON" ] && BOXES_JSON="[]"
+
+		BOOT_ENABLED="false"
+		if [ -x /etc/init.d/hclient ] && /etc/init.d/hclient enabled 2>/dev/null; then
+			BOOT_ENABLED="true"
+		elif ls /etc/rc.d/S*hclient >/dev/null 2>&1; then
+			BOOT_ENABLED="true"
+		fi
+
+		UCI_ENABLED="$(uci_get enabled "1")"
+		TUN_MODE="$(uci_get tun "enabled")"
+		PROXY_MODE="$(uci_get proxy "enabled")"
+		PROXY_ADDR="$(uci_get proxy_listen_addr "0.0.0.0:61090")"
+		LAN_ACCESS="$(uci_get lan_access "1")"
+		DNS_FORWARD="$(uci_get dns_forward "1")"
+		VERSION="$("$PROG" -version 2>/dev/null | head -n 1 | tr -d '\r\n')"
+		[ -z "$VERSION" ] && VERSION="v1.5.1"
+
+		TUN_IF="$(ip -o link show 2>/dev/null | awk -F': ' '/heiyu-/{print $2; exit}')"
+		VIP=""
+		if [ -n "$TUN_IF" ]; then
+			VIP="$(ip -6 -o addr show dev "$TUN_IF" scope global 2>/dev/null | awk '{print $4; exit}')"
+		fi
+
+		printf '{"running":%s,"pid":"%s","boot_enabled":%s,"uci_enabled":"%s","tun":"%s","proxy":"%s","proxy_listen_addr":"%s","address":"%s","lan_access":"%s","dns_forward":"%s","version":"%s","tun_ifname":"%s","virtual_ip":"%s","boxes":%s}\n' \
+			"$RUNNING" \
+			"$(printf '%s' "$PID" | json_escape)" \
+			"$BOOT_ENABLED" \
+			"$(printf '%s' "$UCI_ENABLED" | json_escape)" \
+			"$(printf '%s' "$TUN_MODE" | json_escape)" \
+			"$(printf '%s' "$PROXY_MODE" | json_escape)" \
+			"$(printf '%s' "$PROXY_ADDR" | json_escape)" \
+			"$(printf '%s' "$ADDR" | json_escape)" \
+			"$(printf '%s' "$LAN_ACCESS" | json_escape)" \
+			"$(printf '%s' "$DNS_FORWARD" | json_escape)" \
+			"$(printf '%s' "$VERSION" | json_escape)" \
+			"$(printf '%s' "$TUN_IF" | json_escape)" \
+			"$(printf '%s' "$VIP" | json_escape)" \
+			"$BOXES_JSON"
+		;;
+
+	service_action)
+		SUB="$1"
+		case "$SUB" in
+			start)
+				command -v uci >/dev/null 2>&1 && { uci -q set hclient.config.enabled='1'; uci -q commit hclient; }
+				/etc/init.d/hclient start >/dev/null 2>&1
+				;;
+			stop)
+				/etc/init.d/hclient stop >/dev/null 2>&1
+				;;
+			restart)
+				command -v uci >/dev/null 2>&1 && { uci -q set hclient.config.enabled='1'; uci -q commit hclient; }
+				/etc/init.d/hclient restart >/dev/null 2>&1
+				;;
+			enable)
+				command -v uci >/dev/null 2>&1 && { uci -q set hclient.config.enabled='1'; uci -q commit hclient; }
+				/etc/init.d/hclient enable >/dev/null 2>&1
+				;;
+			disable)
+				/etc/init.d/hclient disable >/dev/null 2>&1
+				;;
+			*)
+				printf '{"ok":false,"output":"Unknown service action"}\n'
+				exit 1
+				;;
+		esac
+		printf '{"ok":true,"output":"Service action %s executed"}\n' "$(printf '%s' "$SUB" | json_escape)"
+		;;
+
+	save_config)
+		ENABLED="${1:-1}"
+		BOOT_EN="${2:-1}"
+		TUN="${3:-enabled}"
+		PROXY="${4:-enabled}"
+		PROXY_ADDR="${5:-0.0.0.0:61090}"
+		CTRL_ADDR="${6:-tcp://127.0.0.1:61091}"
+		LAN_ACC="${7:-1}"
+		DNS_FWD="${8:-1}"
+
+		if command -v uci >/dev/null 2>&1; then
+			uci -q set hclient.config=hclient
+			uci -q set hclient.config.enabled="$ENABLED"
+			uci -q set hclient.config.tun="$TUN"
+			uci -q set hclient.config.proxy="$PROXY"
+			uci -q set hclient.config.proxy_listen_addr="$PROXY_ADDR"
+			uci -q set hclient.config.address="$CTRL_ADDR"
+			uci -q set hclient.config.lan_access="$LAN_ACC"
+			uci -q set hclient.config.dns_forward="$DNS_FWD"
+			uci -q commit hclient
+		fi
+
+		run_cli config set -tun "$TUN" -proxy "$PROXY" -proxy-listen-addr "$PROXY_ADDR" >/dev/null 2>&1 || true
+
+		if [ "$BOOT_EN" = "1" ] || [ "$BOOT_EN" = "true" ]; then
+			/etc/init.d/hclient enable >/dev/null 2>&1 || true
+		else
+			/etc/init.d/hclient disable >/dev/null 2>&1 || true
+		fi
+
+		if [ "$ENABLED" = "1" ] || [ "$ENABLED" = "true" ]; then
+			/etc/init.d/hclient restart >/dev/null 2>&1 || true
+		else
+			/etc/init.d/hclient stop >/dev/null 2>&1 || true
+		fi
+
+		printf '{"ok":true,"output":"配置已保存并应用"}\n'
+		;;
+
+	login_qr)
+		URL_OUT="$(run_cli login qr -format url-only -no-wait 2>&1)"
+		CODE=$?
+		QR_OUT="$(run_cli login qr -format qr -no-wait 2>&1)"
+		OK="false"
+		[ "$CODE" -eq 0 ] && OK="true"
+		printf '{"ok":%s,"url":"%s","qr":"%s"}\n' \
+			"$OK" \
+			"$(printf '%s' "$URL_OUT" | json_escape)" \
+			"$(printf '%s' "$QR_OUT" | json_escape)"
+		;;
+
+	login_manual)
+		BOX_NAME="$1"
+		USER_NAME="$2"
+		PASS_WORD="$3"
+		OUT="$(printf '%s\n' "$PASS_WORD" | run_cli login manual -box-name "$BOX_NAME" -user "$USER_NAME" -password-stdin -timeout 25s 2>&1)"
+		CODE=$?
+		OK="false"
+		[ "$CODE" -eq 0 ] && OK="true"
+		printf '{"ok":%s,"output":"%s"}\n' "$OK" "$(printf '%s' "$OUT" | json_escape)"
+		;;
+
+	login_tfa)
+		BOX_ID="$1"
+		TFA_CODE="$2"
+		OUT="$(run_cli login tfa -box-id "$BOX_ID" -code "$TFA_CODE" -timeout 25s 2>&1)"
+		CODE=$?
+		OK="false"
+		[ "$CODE" -eq 0 ] && OK="true"
+		printf '{"ok":%s,"output":"%s"}\n' "$OK" "$(printf '%s' "$OUT" | json_escape)"
+		;;
+
+	box_action)
+		SUB="$1"
+		BOX_ID="$2"
+		case "$SUB" in
+			enable|disable|set-default|delete)
+				OUT="$(run_cli box "$SUB" -box-id "$BOX_ID" 2>&1)"
+				CODE=$?
+				OK="false"
+				[ "$CODE" -eq 0 ] && OK="true"
+				printf '{"ok":%s,"output":"%s"}\n' "$OK" "$(printf '%s' "$OUT" | json_escape)"
+				;;
+			*)
+				printf '{"ok":false,"output":"Invalid box action"}\n'
+				;;
+		esac
+		;;
+
+	check)
+		OUT="$(run_cli check 2>&1)"
+		CODE=$?
+		OK="false"
+		[ "$CODE" -eq 0 ] && OK="true"
+		printf '{"ok":%s,"output":"%s"}\n' "$OK" "$(printf '%s' "$OUT" | json_escape)"
+		;;
+
+	netdiag)
+		OUT="$("$PROG" -root network-diagnostic 2>&1)"
+		CODE=$?
+		OK="false"
+		[ "$CODE" -eq 0 ] && OK="true"
+		printf '{"ok":%s,"output":"%s"}\n' "$OK" "$(printf '%s' "$OUT" | json_escape)"
+		;;
+
+	logs)
+		SYSLOG=""
+		if command -v logread >/dev/null 2>&1; then
+			SYSLOG="$(logread -e hclient 2>/dev/null | tail -n 80)"
+		fi
+		APPLOG=""
+		if [ -f "$STATE_DIR/rizhi/hclient.json" ]; then
+			APPLOG="$(tail -n 60 "$STATE_DIR/rizhi/hclient.json" 2>/dev/null)"
+		fi
+		printf '{"ok":true,"syslog":"%s","applog":"%s"}\n' \
+			"$(printf '%s' "$SYSLOG" | json_escape)" \
+			"$(printf '%s' "$APPLOG" | json_escape)"
+		;;
+
+	*)
+		printf '{"ok":false,"output":"Usage: hclient-call <status|service_action|save_config|login_qr|login_manual|login_tfa|box_action|check|netdiag|logs>"}\n'
+		exit 1
+		;;
+esac

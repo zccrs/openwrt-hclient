@@ -1,0 +1,172 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=10
+
+PROG=/usr/bin/hclient-cli
+STATE_DIR=/etc/hclient/state
+
+ensure_dirs() {
+	mkdir -p "$STATE_DIR" /root/.config
+	if [ ! -L /root/.config/hportal-client ]; then
+		if [ -d /root/.config/hportal-client ]; then
+			cp -a /root/.config/hportal-client/. "$STATE_DIR"/ 2>/dev/null || true
+			rm -rf /root/.config/hportal-client
+		fi
+		ln -sf "$STATE_DIR" /root/.config/hportal-client
+	fi
+}
+
+setup_host_ip_watcher() {
+	(
+		local i=0
+		while [ $i -lt 30 ]; do
+			local tun_if
+			tun_if="$(ip -o link show 2>/dev/null | awk -F': ' '/heiyu-/{print $2; exit}')"
+			if [ -n "$tun_if" ]; then
+				local vip0
+				vip0="$(ip -6 -o addr show dev "$tun_if" scope global 2>/dev/null | awk '{print $4}' | grep ':0/' | head -n 1)"
+				if [ -n "$vip0" ]; then
+					local vip1="${vip0%:0/*}:1/128"
+					ip -6 addr add "$vip1" dev "$tun_if" 2>/dev/null || true
+					command -v ip6tables >/dev/null 2>&1 && {
+						ip6tables -C INPUT -i heiyu-+ -j ACCEPT 2>/dev/null || ip6tables -I INPUT -i heiyu-+ -j ACCEPT 2>/dev/null || true
+					}
+					command -v nft >/dev/null 2>&1 && {
+						nft insert rule inet fw4 input iifname "heiyu-*" accept 2>/dev/null || true
+					}
+					break
+				fi
+			fi
+			sleep 1
+			i=$((i + 1))
+		done
+	) &
+}
+
+setup_network_service() {
+	local tun="$1"
+	local lan_access="$2"
+	local dns_forward="$3"
+
+	if [ "$tun" = "enabled" ]; then
+		modprobe tun 2>/dev/null || true
+		sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+	fi
+
+	# Configure Dnsmasq for *.heiyu.space resolution via TUN DNS fc03:1136:3800::1
+	if [ "$tun" = "enabled" ] && [ "$dns_forward" -eq 1 ]; then
+		for ddir in /tmp/dnsmasq.d /tmp/dnsmasq.cfg01411c.d; do
+			if [ -d "$ddir" ] || [ "$ddir" = "/tmp/dnsmasq.d" ]; then
+				mkdir -p "$ddir"
+				cat > "$ddir/hclient.conf" <<EOF
+server=/heiyu.space/fc03:1136:3800::1
+rebind-domain-ok=/heiyu.space/
+EOF
+			fi
+		done
+		/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+	else
+		rm -f /tmp/dnsmasq.d/hclient.conf /tmp/dnsmasq.cfg*.d/hclient.conf 2>/dev/null || true
+		/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+	fi
+
+	# Configure Firewall LAN -> heiyu-+ forwarding & NAT66
+	if [ "$tun" = "enabled" ] && [ "$lan_access" -eq 1 ]; then
+		if command -v uci >/dev/null 2>&1; then
+			if [ "$(uci -q get firewall.hclient_zone)" != "zone" ]; then
+				uci -q batch <<EOF
+set firewall.hclient_zone=zone
+set firewall.hclient_zone.name='hclient'
+set firewall.hclient_zone.input='ACCEPT'
+set firewall.hclient_zone.output='ACCEPT'
+set firewall.hclient_zone.forward='ACCEPT'
+set firewall.hclient_zone.masq='1'
+set firewall.hclient_zone.masq6='1'
+add_list firewall.hclient_zone.device='heiyu-+'
+set firewall.hclient_lan_fwd=forwarding
+set firewall.hclient_lan_fwd.src='lan'
+set firewall.hclient_lan_fwd.dest='hclient'
+set firewall.hclient_wan_fwd=forwarding
+set firewall.hclient_wan_fwd.src='hclient'
+set firewall.hclient_wan_fwd.dest='lan'
+commit firewall
+EOF
+				/etc/init.d/firewall reload >/dev/null 2>&1 || true
+			fi
+		fi
+		# Runtime fallback rules for immediate effect
+		if command -v ip6tables >/dev/null 2>&1; then
+			ip6tables -C INPUT -i heiyu-+ -j ACCEPT 2>/dev/null || ip6tables -I INPUT -i heiyu-+ -j ACCEPT 2>/dev/null || true
+			ip6tables -C FORWARD -i heiyu-+ -j ACCEPT 2>/dev/null || ip6tables -I FORWARD -i heiyu-+ -j ACCEPT 2>/dev/null || true
+			ip6tables -C FORWARD -o heiyu-+ -j ACCEPT 2>/dev/null || ip6tables -I FORWARD -o heiyu-+ -j ACCEPT 2>/dev/null || true
+			ip6tables -t nat -C POSTROUTING -o heiyu-+ -j MASQUERADE 2>/dev/null || ip6tables -t nat -A POSTROUTING -o heiyu-+ -j MASQUERADE 2>/dev/null || true
+		fi
+		if command -v nft >/dev/null 2>&1; then
+			nft insert rule inet fw4 input iifname "heiyu-*" accept 2>/dev/null || true
+		fi
+		setup_host_ip_watcher
+	fi
+}
+
+cleanup_network_service() {
+	rm -f /tmp/dnsmasq.d/hclient.conf /tmp/dnsmasq.cfg*.d/hclient.conf 2>/dev/null || true
+	/etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+}
+
+start_service() {
+	ensure_dirs
+	config_load hclient
+
+	local enabled
+	local tun
+	local proxy
+	local proxy_listen_addr
+	local address
+	local lan_access
+	local dns_forward
+
+	config_get_bool enabled config enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get tun config tun "enabled"
+	config_get proxy config proxy "enabled"
+	config_get proxy_listen_addr config proxy_listen_addr "0.0.0.0:61090"
+	config_get address config address "tcp://127.0.0.1:61091"
+	config_get_bool lan_access config lan_access 1
+	config_get_bool dns_forward config dns_forward 1
+
+	setup_network_service "$tun" "$lan_access" "$dns_forward"
+
+	procd_open_instance "hclient"
+	procd_set_param env HOME=/root HCLIENT_CLI_CFG="$STATE_DIR"
+	procd_set_param command "$PROG" -root
+	[ -n "$address" ] && procd_append_param command -address "$address"
+	procd_append_param command daemon
+	procd_append_param command --tun "$tun"
+	procd_append_param command --proxy "$proxy"
+	procd_append_param command --proxy-listen-addr "$proxy_listen_addr"
+
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	local address
+	config_load hclient
+	config_get address config address "tcp://127.0.0.1:61091"
+	HOME=/root HCLIENT_CLI_CFG="$STATE_DIR" "$PROG" -root -address "$address" stop-daemon >/dev/null 2>&1 || true
+	cleanup_network_service
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "hclient"
+}

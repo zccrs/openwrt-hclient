@@ -1,0 +1,57 @@
+#!/bin/sh
+set -e
+
+pkg_dir="$(realpath "$1")"
+dest_dir="$(realpath "${2:-.}")"
+custom_out="${3:-}"
+CONTROL="CONTROL"
+
+if [ -n "$SOURCE_DATE_EPOCH" ]; then
+	TIMESTAMP="@$SOURCE_DATE_EPOCH"
+else
+	TIMESTAMP="@$(date +%s)"
+fi
+
+ipkg_extract_value() {
+	sed -e "s/^[^:]*:[[:space:]]*//"
+}
+
+required_field() {
+	grep "^$1:" < "$pkg_dir/$CONTROL/control" | ipkg_extract_value
+}
+
+pkg="$(required_field Package)"
+version="$(required_field Version | sed 's/Version://; s/^.://g;')"
+arch="$(required_field Architecture)"
+
+mkdir -p "$dest_dir"
+tmp_dir="$dest_dir/IPKG_BUILD.$$"
+mkdir -p "$tmp_dir"
+echo "$CONTROL" > "$tmp_dir/tarX"
+
+cd "$pkg_dir"
+if [ -f "$CONTROL/conffiles" ]; then
+	chmod 0644 "$CONTROL/conffiles"
+fi
+
+tar -X "$tmp_dir/tarX" --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -cpf - --mtime="$TIMESTAMP" . | gzip -n -9 - > "$tmp_dir/data.tar.gz"
+
+installed_size=$(zcat < "$tmp_dir/data.tar.gz" | wc -c)
+sed -i -e "s/^Installed-Size: .*/Installed-Size: $installed_size/" "$pkg_dir/$CONTROL/control"
+
+( cd "$pkg_dir/$CONTROL" && tar --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -cf - --mtime="$TIMESTAMP" . | gzip -n -9 - > "$tmp_dir/control.tar.gz" )
+rm "$tmp_dir/tarX"
+
+echo "2.0" > "$tmp_dir/debian-binary"
+
+if [ -n "$custom_out" ]; then
+	pkg_file="$dest_dir/$custom_out"
+else
+	pkg_file="$dest_dir/${pkg}_${version}_${arch}.ipk"
+fi
+
+rm -f "$pkg_file"
+( cd "$tmp_dir" && tar --format=gnu --owner=0 --group=0 --numeric-owner --sort=name -cf - --mtime="$TIMESTAMP" ./debian-binary ./data.tar.gz ./control.tar.gz | gzip -n -9 - > "$pkg_file" )
+
+rm -rf "$tmp_dir"
+echo "Built: $pkg_file"

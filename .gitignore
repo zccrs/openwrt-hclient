@@ -1,0 +1,5 @@
+dist/
+.cache/
+*.ipk
+files/hclient-cli
+files/hclient-cli-linux-*

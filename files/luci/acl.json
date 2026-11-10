@@ -1,0 +1,23 @@
+{
+	"luci-app-hclient": {
+		"description": "Grant access to Lazycat HClient management and UCI configuration",
+		"read": {
+			"uci": [ "hclient" ],
+			"file": {
+				"/usr/libexec/hclient-call *": [ "exec" ],
+				"/usr/libexec/hclient-call": [ "exec" ],
+				"/usr/bin/hclient-cli *": [ "exec" ],
+				"/etc/init.d/hclient *": [ "exec" ],
+				"/etc/hclient/*": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "hclient" ],
+			"file": {
+				"/usr/libexec/hclient-call *": [ "exec" ],
+				"/usr/libexec/hclient-call": [ "exec" ],
+				"/etc/init.d/hclient *": [ "exec" ]
+			}
+		}
+	}
+}

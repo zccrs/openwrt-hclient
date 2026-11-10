@@ -1,0 +1,299 @@
+<%+header%>
+<div class="cbi-map">
+	<h2>懒猫微服网络服务 (Lazycat HClient)</h2>
+	<div class="cbi-map-descr">将懒猫微服客户端作为 OpenWrt 路由级网络服务运行，支持开机自启动、TUN 虚拟专网直连、局域网共享转发与 Dnsmasq 域名自动解析。</div>
+
+	<div class="cbi-section">
+		<h3>一、 服务运行状态与快捷控制</h3>
+		<div class="cbi-section-node" style="padding:12px;">
+			<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px;">
+				<span id="hc-run-badge" style="padding:5px 12px;border-radius:4px;color:#fff;font-weight:bold;background:#6b7280;">加载中...</span>
+				<span id="hc-boot-badge" style="padding:5px 12px;border-radius:4px;color:#fff;font-weight:bold;background:#6b7280;">加载中...</span>
+				<span><strong>TUN 虚拟网卡：</strong><span id="hc-tun-info" style="font-family:monospace;">-</span></span>
+				<span><strong>混合代理监听：</strong><span id="hc-proxy-info" style="font-family:monospace;">-</span></span>
+				<span><strong>版本：</strong><span id="hc-ver-info">-</span></span>
+			</div>
+			<div style="display:flex;flex-wrap:wrap;gap:8px;">
+				<input type="button" class="btn cbi-button cbi-button-apply" value="启动服务" onclick="hcServiceAction('start')" />
+				<input type="button" class="btn cbi-button cbi-button-reset" value="停止服务" onclick="hcServiceAction('stop')" />
+				<input type="button" class="btn cbi-button cbi-button-action" value="重启服务" onclick="hcServiceAction('restart')" />
+				<input type="button" class="btn cbi-button cbi-button-neutral" value="刷新状态" onclick="hcRefreshStatus(true)" />
+			</div>
+		</div>
+	</div>
+
+	<div class="cbi-section">
+		<h3>二、 网络服务与开机自启动设置</h3>
+		<div class="cbi-section-node">
+			<div class="cbi-value">
+				<label class="cbi-value-title">启用后台服务</label>
+				<div class="cbi-value-field"><input id="hc-cfg-enabled" type="checkbox" checked /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">开机自动启动</label>
+				<div class="cbi-value-field"><input id="hc-cfg-boot" type="checkbox" checked /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">TUN 虚拟网卡模式</label>
+				<div class="cbi-value-field">
+					<select id="hc-cfg-tun" class="cbi-input-select">
+						<option value="enabled">启用 (推荐，创建 heiyu-0 虚拟网卡)</option>
+						<option value="disabled">禁用 (仅使用本地代理)</option>
+					</select>
+				</div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">允许局域网设备转发访问</label>
+				<div class="cbi-value-field"><input id="hc-cfg-lan" type="checkbox" checked /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">自动配置 Dnsmasq 域名解析</label>
+				<div class="cbi-value-field"><input id="hc-cfg-dns" type="checkbox" checked /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">HTTP/SOCKS5 混合代理</label>
+				<div class="cbi-value-field">
+					<select id="hc-cfg-proxy" class="cbi-input-select">
+						<option value="enabled">启用</option>
+						<option value="disabled">禁用</option>
+					</select>
+				</div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">代理监听地址</label>
+				<div class="cbi-value-field"><input id="hc-cfg-proxy-addr" type="text" class="cbi-input-text" value="0.0.0.0:61090" /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">守护进程控制地址</label>
+				<div class="cbi-value-field"><input id="hc-cfg-ctrl-addr" type="text" class="cbi-input-text" value="tcp://127.0.0.1:61091" /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title"></label>
+				<div class="cbi-value-field">
+					<input type="button" class="btn cbi-button cbi-button-save" value="保存并应用配置" onclick="hcSaveConfig()" />
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="cbi-section">
+		<h3>三、 已绑定的懒猫微服设备</h3>
+		<div class="cbi-section-node">
+			<table class="table cbi-section-table">
+				<thead>
+					<tr class="tr table-titles">
+						<th class="th">微服名称</th>
+						<th class="th">Box ID</th>
+						<th class="th">连接状态</th>
+						<th class="th">登录账号</th>
+						<th class="th">默认设备</th>
+						<th class="th">操作</th>
+					</tr>
+				</thead>
+				<tbody id="hc-box-tbody"></tbody>
+			</table>
+		</div>
+	</div>
+
+	<div class="cbi-section">
+		<h3>四、 登录 / 添加懒猫微服</h3>
+		<div class="cbi-section-node">
+			<div class="cbi-value">
+				<label class="cbi-value-title">微服名称 (Box Name)</label>
+				<div class="cbi-value-field"><input id="hc-login-box" type="text" class="cbi-input-text" placeholder="例如：mybox" /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">用户名 (User)</label>
+				<div class="cbi-value-field"><input id="hc-login-user" type="text" class="cbi-input-text" /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title">密码 (Password)</label>
+				<div class="cbi-value-field"><input id="hc-login-pass" type="password" class="cbi-input-password" /></div>
+			</div>
+			<div class="cbi-value">
+				<label class="cbi-value-title"></label>
+				<div class="cbi-value-field">
+					<input type="button" class="btn cbi-button cbi-button-apply" value="账号密码登录" onclick="hcManualLogin()" />
+					<input type="button" class="btn cbi-button cbi-button-action" value="生成扫码登录二维码" onclick="hcQrLogin()" />
+				</div>
+			</div>
+			<pre id="hc-qr-display" style="display:none;background:#111;color:#fff;padding:14px;border-radius:6px;font-family:monospace;line-height:1.05;font-size:12px;overflow-x:auto;margin:10px 20px;"></pre>
+			<hr style="margin:14px 0;" />
+			<div class="cbi-value">
+				<label class="cbi-value-title">双因素验证 (2FA / TFA)</label>
+				<div class="cbi-value-field">
+					<input id="hc-tfa-boxid" type="text" class="cbi-input-text" style="width:240px;" placeholder="Box ID" />
+					<input id="hc-tfa-code" type="text" class="cbi-input-text" style="width:140px;" placeholder="6位验证码" />
+					<input type="button" class="btn cbi-button cbi-button-action" value="提交 2FA 验证" onclick="hcTfaLogin()" />
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="cbi-section">
+		<h3>五、 网络诊断与运行日志</h3>
+		<div class="cbi-section-node" style="padding:12px;">
+			<div style="margin-bottom:10px;">
+				<input type="button" class="btn cbi-button cbi-button-action" value="运行环境检查 (check)" onclick="hcDiag('check')" />
+				<input type="button" class="btn cbi-button cbi-button-action" value="网络穿透诊断 (network-diagnostic)" onclick="hcDiag('netdiag')" />
+				<input type="button" class="btn cbi-button cbi-button-neutral" value="查看运行日志 (logs)" onclick="hcDiag('logs')" />
+			</div>
+			<pre id="hc-console-out" style="background:#1e293b;color:#e2e8f0;padding:12px;border-radius:6px;font-family:monospace;font-size:12px;min-height:100px;max-height:420px;overflow:auto;white-space:pre-wrap;">点击上方按钮可执行环境检测、打洞诊断或读取实时运行日志。</pre>
+		</div>
+	</div>
+</div>
+
+<script type="text/javascript">
+var apiUrl = '<%=luci.dispatcher.build_url("admin", "network", "hclient", "api")%>';
+var cfgInitialized = false;
+
+function hcApi(params, cb) {
+	var qs = [];
+	for (var k in params) {
+		if (params.hasOwnProperty(k)) {
+			qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+		}
+	}
+	var xhr = new XMLHttpRequest();
+	xhr.open('POST', apiUrl, true);
+	xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+	xhr.onreadystatechange = function() {
+		if (xhr.readyState === 4) {
+			try {
+				cb(JSON.parse(xhr.responseText));
+			} catch (e) {
+				cb({ ok: false, output: xhr.responseText });
+			}
+		}
+	};
+	xhr.send(qs.join('&'));
+}
+
+function hcRefreshStatus(syncForm) {
+	hcApi({ cmd: 'status' }, function(st) {
+		if (!st) return;
+		var rb = document.getElementById('hc-run-badge');
+		rb.textContent = st.running ? ('运行中' + (st.pid ? ' (PID: ' + st.pid + ')' : '')) : '已停止';
+		rb.style.background = st.running ? '#16a34a' : '#dc2626';
+
+		var bb = document.getElementById('hc-boot-badge');
+		bb.textContent = st.boot_enabled ? '开机自启：已开启' : '开机自启：已关闭';
+		bb.style.background = st.boot_enabled ? '#2563eb' : '#6b7280';
+
+		document.getElementById('hc-tun-info').textContent = st.tun_ifname ? (st.tun_ifname + ' (' + (st.virtual_ip || '无IPv6') + ')') : '未建立';
+		document.getElementById('hc-proxy-info').textContent = (st.proxy === 'enabled') ? (st.proxy_listen_addr || '0.0.0.0:61090') : '已禁用';
+		document.getElementById('hc-ver-info').textContent = st.version || 'v1.5.1';
+
+		if (!cfgInitialized || syncForm) {
+			cfgInitialized = true;
+			document.getElementById('hc-cfg-enabled').checked = (st.uci_enabled !== '0');
+			document.getElementById('hc-cfg-boot').checked = !!st.boot_enabled;
+			document.getElementById('hc-cfg-tun').value = st.tun || 'enabled';
+			document.getElementById('hc-cfg-proxy').value = st.proxy || 'enabled';
+			document.getElementById('hc-cfg-proxy-addr').value = st.proxy_listen_addr || '0.0.0.0:61090';
+			document.getElementById('hc-cfg-ctrl-addr').value = st.address || 'tcp://127.0.0.1:61091';
+			document.getElementById('hc-cfg-lan').checked = (st.lan_access !== '0');
+			document.getElementById('hc-cfg-dns').checked = (st.dns_forward !== '0');
+		}
+
+		var tbody = document.getElementById('hc-box-tbody');
+		tbody.innerHTML = '';
+		var boxes = st.boxes || [];
+		if (boxes.length === 0) {
+			tbody.innerHTML = '<tr class="tr"><td class="td" colspan="6" style="text-align:center;color:#888;padding:14px;">暂无已登录的懒猫微服设备</td></tr>';
+			return;
+		}
+		for (var i = 0; i < boxes.length; i++) {
+			var b = boxes[i];
+			var tr = document.createElement('tr');
+			tr.className = 'tr';
+			tr.innerHTML = '<td class="td"><b>' + (b.name || '-') + '</b></td>' +
+				'<td class="td" style="font-family:monospace;font-size:12px;">' + (b.id || '-') + '</td>' +
+				'<td class="td">' + (b.status || '-') + '</td>' +
+				'<td class="td">' + (b.user || '-') + '</td>' +
+				'<td class="td">' + (b.is_default ? '★ 默认' : '否') + '</td>' +
+				'<td class="td">' +
+				'<input type="button" class="btn cbi-button cbi-button-apply" value="设为默认" onclick="hcBoxAct(\'set-default\',\'' + b.id + '\')" /> ' +
+				'<input type="button" class="btn cbi-button cbi-button-action" value="启用" onclick="hcBoxAct(\'enable\',\'' + b.id + '\')" /> ' +
+				'<input type="button" class="btn cbi-button cbi-button-neutral" value="禁用" onclick="hcBoxAct(\'disable\',\'' + b.id + '\')" /> ' +
+				'<input type="button" class="btn cbi-button cbi-button-remove" value="删除" onclick="hcBoxAct(\'delete\',\'' + b.id + '\')" />' +
+				'</td>';
+			tbody.appendChild(tr);
+		}
+	});
+}
+
+function hcServiceAction(act) {
+	hcApi({ cmd: 'service_action', a1: act }, function() {
+		setTimeout(function() { hcRefreshStatus(true); }, 1200);
+	});
+}
+
+function hcSaveConfig() {
+	hcApi({
+		cmd: 'save_config',
+		a1: document.getElementById('hc-cfg-enabled').checked ? '1' : '0',
+		a2: document.getElementById('hc-cfg-boot').checked ? '1' : '0',
+		a3: document.getElementById('hc-cfg-tun').value,
+		a4: document.getElementById('hc-cfg-proxy').value,
+		a5: document.getElementById('hc-cfg-proxy-addr').value,
+		a6: document.getElementById('hc-cfg-ctrl-addr').value,
+		a7: document.getElementById('hc-cfg-lan').checked ? '1' : '0',
+		a8: document.getElementById('hc-cfg-dns').checked ? '1' : '0'
+	}, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '配置已保存';
+		setTimeout(function() { hcRefreshStatus(true); }, 1500);
+	});
+}
+
+function hcBoxAct(act, id) {
+	hcApi({ cmd: 'box_action', a1: act, a2: id }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcRefreshStatus(false);
+	});
+}
+
+function hcManualLogin() {
+	var box = document.getElementById('hc-login-box').value;
+	var user = document.getElementById('hc-login-user').value;
+	var pass = document.getElementById('hc-login-pass').value;
+	document.getElementById('hc-console-out').textContent = '正在登录微服 ' + box + ' ...';
+	hcApi({ cmd: 'login_manual', a1: box, a2: user, a3: pass }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcRefreshStatus(false);
+	});
+}
+
+function hcQrLogin() {
+	var pre = document.getElementById('hc-qr-display');
+	pre.style.display = 'block';
+	pre.textContent = '正在获取二维码...';
+	hcApi({ cmd: 'login_qr' }, function(res) {
+		pre.textContent = ((res && res.qr) ? res.qr + '\n\n' : '') + '登录链接:\n' + ((res && res.url) || '');
+	});
+}
+
+function hcTfaLogin() {
+	var id = document.getElementById('hc-tfa-boxid').value;
+	var code = document.getElementById('hc-tfa-code').value;
+	hcApi({ cmd: 'login_tfa', a1: id, a2: code }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcRefreshStatus(false);
+	});
+}
+
+function hcDiag(cmd) {
+	document.getElementById('hc-console-out').textContent = '正在执行 ' + cmd + ' ...';
+	hcApi({ cmd: cmd }, function(res) {
+		if (cmd === 'logs' && res) {
+			document.getElementById('hc-console-out').textContent = '=== 系统日志 ===\n' + (res.syslog || '') + '\n\n=== 应用日志 ===\n' + (res.applog || '');
+		} else {
+			document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		}
+	});
+}
+
+hcRefreshStatus(true);
+setInterval(function() { hcRefreshStatus(false); }, 8000);
+</script>
+<%+footer%>

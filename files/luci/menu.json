@@ -1,0 +1,24 @@
+{
+	"admin/network/hclient": {
+		"title": "懒猫微服 (HClient)",
+		"order": 85,
+		"action": {
+			"type": "view",
+			"path": "hclient/index"
+		},
+		"depends": {
+			"acl": [ "luci-app-hclient" ]
+		}
+	},
+	"admin/services/hclient": {
+		"title": "懒猫微服 (HClient)",
+		"order": 85,
+		"action": {
+			"type": "view",
+			"path": "hclient/index"
+		},
+		"depends": {
+			"acl": [ "luci-app-hclient" ]
+		}
+	}
+}
