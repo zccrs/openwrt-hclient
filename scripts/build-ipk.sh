@@ -203,7 +203,7 @@ EOF
 "$ROOT_DIR/scripts/ipkg-build" "$LUCI_STAGE" "$DIST_DIR" "luci-app-hclient_${PKG_VERSION}-${PKG_REL}_all.ipk"
 rm -rf "$LUCI_STAGE"
 
-( cd "$DIST_DIR" && sha256sum ./*.ipk > SHA256SUMS )
+( cd "$DIST_DIR" && sha256sum *.ipk > SHA256SUMS )
 echo "$RAW_VERSION" > "$DIST_DIR/VERSION"
 echo "==> All packages built successfully in $DIST_DIR:"
 ls -lh "$DIST_DIR"
