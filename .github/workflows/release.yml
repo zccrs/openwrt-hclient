@@ -25,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check upstream Lazycat hclient-cli version
+      - name: Check upstream Lazycat version & calculate cumulative package release (-1, -2, ...)
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -39,23 +39,59 @@ jobs:
             echo "Failed to fetch upstream version" >&2
             exit 1
           fi
+          PKG_VER="${UPSTREAM_VER#v}"
           echo "upstream_version=$UPSTREAM_VER" >> "$GITHUB_OUTPUT"
-          echo "pkg_version=${UPSTREAM_VER#v}" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$PKG_VER" >> "$GITHUB_OUTPUT"
 
-          if gh release view "$UPSTREAM_VER" >/dev/null 2>&1; then
-            echo "release_exists=true" >> "$GITHUB_OUTPUT"
-            if [ "$EVENT_NAME" = "schedule" ] && [ "$FORCE_REBUILD" != "true" ]; then
+          TAGS="$(gh release list --limit 100 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
+          MAX_REL=0
+          HAS_CURRENT_UPSTREAM="false"
+
+          for t in $TAGS; do
+            case "$t" in
+              "v${PKG_VER}"|"v${PKG_VER}-"*)
+                HAS_CURRENT_UPSTREAM="true"
+                ;;
+            esac
+            if echo "$t" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+              r="${t##*-}"
+              if [ "$r" -gt "$MAX_REL" ]; then
+                MAX_REL="$r"
+              fi
+            elif echo "$t" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              if [ "$MAX_REL" -lt 1 ]; then
+                MAX_REL=1
+              fi
+            fi
+          done
+
+          if [ "$EVENT_NAME" = "schedule" ] && [ "$FORCE_REBUILD" != "true" ]; then
+            if [ "$HAS_CURRENT_UPSTREAM" = "true" ]; then
               echo "should_build=false" >> "$GITHUB_OUTPUT"
-              echo "Release $UPSTREAM_VER already exists on scheduled run; skipping build."
+              echo "Upstream version $UPSTREAM_VER already packaged; skipping scheduled build."
               exit 0
             fi
+            # Upstream released a new x.y.z version on schedule
+            if [ "$MAX_REL" -lt 1 ]; then
+              PKG_REL=1
+            else
+              PKG_REL="$MAX_REL"
+            fi
           else
-            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            # Repo update (push / workflow_dispatch): increment cumulative -1, -2, -3...
+            PKG_REL=$((MAX_REL + 1))
           fi
+
+          REL_TAG="v${PKG_VER}-${PKG_REL}"
+          echo "pkg_rel=$PKG_REL" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$REL_TAG" >> "$GITHUB_OUTPUT"
           echo "should_build=true" >> "$GITHUB_OUTPUT"
+          echo "Resolved target version: ${PKG_VER}-${PKG_REL} (tag: ${REL_TAG})"
 
       - name: Download binaries (amd64 / arm64 / riscv64) and build OpenWrt IPK packages
         if: steps.check.outputs.should_build == 'true'
+        env:
+          PKG_REL: ${{ steps.check.outputs.pkg_rel }}
         run: |
           chmod +x ./scripts/ipkg-build ./scripts/build-ipk.sh
           ./scripts/build-ipk.sh
@@ -65,8 +101,12 @@ jobs:
         run: |
           VER="${{ steps.check.outputs.upstream_version }}"
           PVER="${{ steps.check.outputs.pkg_version }}"
+          PREL="${{ steps.check.outputs.pkg_rel }}"
           cat > dist/RELEASE_NOTES.md << EOF
-          ## 懒猫微服 OpenWrt 客户端 + LuCI 界面 (${VER})
+          ## 懒猫微服 OpenWrt 客户端 + LuCI 界面 (v${PVER}-${PREL})
+
+          - **懒猫上游内核版本**：\`${VER}\`
+          - **OpenWrt 打包修订号**：\`-${PREL}\`（完整版本号：\`${PVER}-${PREL}\`）
 
           本版本由 GitHub Actions 自动从懒猫官方源 (\`https://dl.lazycatmicroserver.com/hclient-cli/latest-version.json\`) 拉取 **amd64 / arm64 / riscv64** 三架构服务端二进制并打包生成。
 
@@ -74,9 +114,9 @@ jobs:
 
           | 路由器架构 | 软件包文件名（均内置客户端 + 开机自启服务 + LuCI 界面） |
           | :--- | :--- |
-          | **amd64 (\`x86_64\` 软路由)** | \`hclient-cli_${PVER}-1_amd64.ipk\` |
-          | **arm64 (\`aarch64\` 全系路由/盒子)** | \`hclient-cli_${PVER}-1_arm64.ipk\` |
-          | **riscv64 (\`RISC-V\` 64位路由)** | \`hclient-cli_${PVER}-1_riscv64.ipk\` |
+          | **amd64 (\`x86_64\` 软路由)** | \`hclient-cli_${PVER}-${PREL}_amd64.ipk\` |
+          | **arm64 (\`aarch64\` 全系路由/盒子)** | \`hclient-cli_${PVER}-${PREL}_arm64.ipk\` |
+          | **riscv64 (\`RISC-V\` 64位路由)** | \`hclient-cli_${PVER}-${PREL}_riscv64.ipk\` |
 
           > 💡 **说明**：每个包均已完整包含客户端二进制、Procd 开机自启服务和 LuCI 界面，并通过 \`Architecture: all\` + \`preinst\` (\`uname -m\`) 校验适配各架构下所有 OpenWrt 子架构（如 \`aarch64_cortex-a53\`、\`aarch64_cortex-a72\`、\`aarch64_generic\`），无需添加 \`--force-architecture\`。
 
@@ -84,7 +124,7 @@ jobs:
 
           \`\`\`bash
           opkg update
-          opkg install /tmp/hclient-cli_${PVER}-1_amd64.ipk
+          opkg install /tmp/hclient-cli_${PVER}-${PREL}_amd64.ipk
           \`\`\`
 
           ### 🔒 SHA256 校验值
@@ -93,11 +133,11 @@ jobs:
           \`\`\`
           EOF
 
-      - name: Publish or Update GitHub Release
+      - name: Publish GitHub Release
         if: steps.check.outputs.should_build == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.check.outputs.upstream_version }}
+          TAG: ${{ steps.check.outputs.release_tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release delete "$TAG" --yes --cleanup-tag || true
