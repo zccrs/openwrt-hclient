@@ -72,20 +72,19 @@ jobs:
 
           ### 📦 架构与安装包对照表
 
-          | 路由器架构 | 推荐安装包（全子架构通用，含客户端+服务+LuCI） | 标准架构包名 |
-          | :--- | :--- | :--- |
-          | **amd64 (x86_64 软路由)** | \`hclient-cli_${PVER}-1_linux_amd64.ipk\` | \`hclient-cli_${PVER}-1_x86_64.ipk\` |
-          | **arm64 (aarch64 全系)** | \`hclient-cli_${PVER}-1_linux_arm64.ipk\` | \`hclient-cli_${PVER}-1_aarch64_generic.ipk\` |
-          | **riscv64 (RISC-V 64位)** | \`hclient-cli_${PVER}-1_linux_riscv64.ipk\` | \`hclient-cli_${PVER}-1_riscv64.ipk\` |
-          | **仅 LuCI 界面包（可选）** | \`luci-app-hclient_${PVER}-1_all.ipk\` | - |
+          | 路由器架构 | 软件包文件名（均内置客户端 + 开机自启服务 + LuCI 界面） |
+          | :--- | :--- |
+          | **amd64 (\`x86_64\` 软路由)** | \`hclient-cli_${PVER}-1_amd64.ipk\` |
+          | **arm64 (\`aarch64\` 全系路由/盒子)** | \`hclient-cli_${PVER}-1_arm64.ipk\` |
+          | **riscv64 (\`RISC-V\` 64位路由)** | \`hclient-cli_${PVER}-1_riscv64.ipk\` |
 
-          > 💡 **提示**：针对 ARM64（如 MT7981/MT7986 \`aarch64_cortex-a53\`、RK3588/R4S \`aarch64_generic\`、树莓派 \`aarch64_cortex-a72\`）及 RISC-V 不同子架构的 OpenWrt 固件，直接下载安装 \`*_linux_arm64.ipk\` / \`*_linux_riscv64.ipk\` 即可免去 \`--force-architecture\`，安装脚本会自动通过 \`uname -m\` 校验 CPU 架构。
+          > 💡 **说明**：每个包均已完整包含客户端二进制、Procd 开机自启服务和 LuCI 界面，并通过 \`Architecture: all\` + \`preinst\` (\`uname -m\`) 校验适配各架构下所有 OpenWrt 子架构（如 \`aarch64_cortex-a53\`、\`aarch64_cortex-a72\`、\`aarch64_generic\`），无需添加 \`--force-architecture\`。
 
           ### 🚀 快速安装
 
           \`\`\`bash
           opkg update
-          opkg install /tmp/hclient-cli_${PVER}-1_linux_amd64.ipk
+          opkg install /tmp/hclient-cli_${PVER}-1_amd64.ipk
           \`\`\`
 
           ### 🔒 SHA256 校验值
@@ -101,11 +100,9 @@ jobs:
           TAG: ${{ steps.check.outputs.upstream_version }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*.ipk dist/SHA256SUMS --clobber
-            gh release edit "$TAG" --title "Lazycat HClient OpenWrt ${TAG}" --notes-file dist/RELEASE_NOTES.md
-          else
-            gh release create "$TAG" dist/*.ipk dist/SHA256SUMS \
-              --title "Lazycat HClient OpenWrt ${TAG}" \
-              --notes-file dist/RELEASE_NOTES.md \
-              --latest
+            gh release delete "$TAG" --yes --cleanup-tag || true
           fi
+          gh release create "$TAG" dist/*.ipk dist/SHA256SUMS \
+            --title "Lazycat HClient OpenWrt ${TAG}" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --latest

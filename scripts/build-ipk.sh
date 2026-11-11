@@ -157,7 +157,7 @@ exit 0
 EOF
 	chmod 755 "$STAGE_DIR/CONTROL/preinst"
 
-	# 1. Build universal subtarget-compatible IPK (Architecture: all with preinst CPU guard)
+	# Build all-in-one IPK (includes binary + network service + LuCI UI; Architecture: all with preinst CPU guard)
 	cat > "$STAGE_DIR/CONTROL/control" << EOF
 Package: hclient-cli
 Version: ${PKG_VERSION}-${PKG_REL}
@@ -168,41 +168,10 @@ Installed-Size: 0
 Maintainer: zccrs
 Description: Lazycat Microserver (hportal) network service, CLI daemon, and LuCI Web UI for OpenWrt ($arch / $UNAME_ARCH).
 EOF
-	"$ROOT_DIR/scripts/ipkg-build" "$STAGE_DIR" "$DIST_DIR" "hclient-cli_${PKG_VERSION}-${PKG_REL}_linux_${arch}.ipk"
-
-	# 2. Build strict OpenWrt arch-named IPK (x86_64 / aarch64_generic / riscv64)
-	cat > "$STAGE_DIR/CONTROL/control" << EOF
-Package: hclient-cli
-Version: ${PKG_VERSION}-${PKG_REL}
-Depends: kmod-tun, ca-bundle
-Section: net
-Architecture: ${OWRT_ARCH}
-Installed-Size: 0
-Maintainer: zccrs
-Description: Lazycat Microserver (hportal) network service, CLI daemon, and LuCI Web UI for OpenWrt ($OWRT_ARCH).
-EOF
-	"$ROOT_DIR/scripts/ipkg-build" "$STAGE_DIR" "$DIST_DIR" "hclient-cli_${PKG_VERSION}-${PKG_REL}_${OWRT_ARCH}.ipk"
+	"$ROOT_DIR/scripts/ipkg-build" "$STAGE_DIR" "$DIST_DIR" "hclient-cli_${PKG_VERSION}-${PKG_REL}_${arch}.ipk"
 
 	rm -rf "$STAGE_DIR"
 done
-
-# Build standalone LuCI package (luci-app-hclient)
-LUCI_STAGE="$(mktemp -d)"
-populate_common_files "$LUCI_STAGE"
-rm -rf "$LUCI_STAGE/etc/init.d" "$LUCI_STAGE/etc/config" "$LUCI_STAGE/etc/hclient" "$LUCI_STAGE/CONTROL/conffiles"
-cat > "$LUCI_STAGE/CONTROL/control" << EOF
-Package: luci-app-hclient
-Version: ${PKG_VERSION}-${PKG_REL}
-Depends: hclient-cli
-Section: luci
-Architecture: all
-Installed-Size: 0
-Maintainer: zccrs
-Description: LuCI Web UI for Lazycat Microserver (HClient) network service.
-EOF
-"$ROOT_DIR/scripts/ipkg-build" "$LUCI_STAGE" "$DIST_DIR" "luci-app-hclient_${PKG_VERSION}-${PKG_REL}_all.ipk"
-rm -rf "$LUCI_STAGE"
-
 ( cd "$DIST_DIR" && sha256sum *.ipk > SHA256SUMS )
 echo "$RAW_VERSION" > "$DIST_DIR/VERSION"
 echo "==> All packages built successfully in $DIST_DIR:"

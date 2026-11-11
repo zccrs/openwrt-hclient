@@ -25,14 +25,13 @@
 
 前往 [Releases 页面](../../releases) 下载对应路由器 CPU 架构的 `.ipk` 包：
 
-| 路由器架构 | 推荐安装包（全子架构通用，含客户端+服务+LuCI） | 标准架构包名 |
-| :--- | :--- | :--- |
-| **amd64 (`x86_64` 软路由)** | `hclient-cli_<版本>_linux_amd64.ipk` | `hclient-cli_<版本>_x86_64.ipk` |
-| **arm64 (`aarch64` 路由/盒子)** | `hclient-cli_<版本>_linux_arm64.ipk` | `hclient-cli_<版本>_aarch64_generic.ipk` |
-| **riscv64 (`RISC-V` 64位路由)** | `hclient-cli_<版本>_linux_riscv64.ipk` | `hclient-cli_<版本>_riscv64.ipk` |
-| **仅 LuCI 界面包（可选）** | `luci-app-hclient_<版本>_all.ipk` | - |
+| 路由器架构 | 安装包名（均内置客户端 + 开机自启服务 + LuCI 界面） |
+| :--- | :--- |
+| **amd64 (`x86_64` 软路由)** | `hclient-cli_<版本>_amd64.ipk` |
+| **arm64 (`aarch64` 路由/盒子)** | `hclient-cli_<版本>_arm64.ipk` |
+| **riscv64 (`RISC-V` 64位路由)** | `hclient-cli_<版本>_riscv64.ipk` |
 
-> **说明**：OpenWrt 的 ARM64 设备存在多种子架构名称（如 `aarch64_cortex-a53`、`aarch64_cortex-a72`、`aarch64_generic`）。下载 `*_linux_arm64.ipk` 可直接在所有 `aarch64` 子架构固件上安装，无需附加 `--force-architecture`，安装前会自动通过 `uname -m` 校验 CPU 架构。
+> **说明**：每个安装包均已完整内置客户端程序、Procd 自启服务与 LuCI 网页界面；采用 `Architecture: all` 配合安装前 `uname -m` 硬件架构校验，兼容所有 ARM64/RISC-V OpenWrt 子架构（如 `aarch64_cortex-a53`、`aarch64_cortex-a72`、`aarch64_generic`），无需附加 `--force-architecture`。
 
 ---
 
@@ -43,7 +42,7 @@
 
 ```bash
 opkg update
-opkg install /tmp/hclient-cli_*_linux_amd64.ipk
+opkg install /tmp/hclient-cli_*_amd64.ipk
 ```
 
 ### 2. 进入 LuCI 界面
