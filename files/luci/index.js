@@ -304,6 +304,11 @@ return view.extend({
 			autoEl.checked = (res.auto_update === true);
 		}
 
+		var proxyEl = document.getElementById('hc-upd-proxy');
+		if (proxyEl && document.activeElement !== proxyEl) {
+			proxyEl.value = res.proxy || '';
+		}
+
 		var msgEl = document.getElementById('hc-upd-msg');
 		if (msgEl) {
 			msgEl.textContent = res.output || '';
@@ -344,6 +349,16 @@ return view.extend({
 	handleUpdateToggle: function(enabled) {
 		var self = this;
 		return callBackend(['update_enabled', enabled ? '1' : '0']).then(function(res) {
+			self.setConsoleOutput((res && res.output) ? res.output : '');
+			return self.refreshUpdateStatus();
+		});
+	},
+
+	handleUpdateProxy: function() {
+		var self = this;
+		var el = document.getElementById('hc-upd-proxy');
+		var value = el ? el.value.trim() : '';
+		return callBackend(['update_proxy', value]).then(function(res) {
 			self.setConsoleOutput((res && res.output) ? res.output : '');
 			return self.refreshUpdateStatus();
 		});
@@ -661,9 +676,23 @@ return view.extend({
 							E('span', {}, '自动检测并安装新版本')
 						])
 					]),
+					E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;' }, [
+						E('span', {}, '更新代理：'),
+						E('input', {
+							'id': 'hc-upd-proxy',
+							'type': 'text',
+							'class': 'cbi-input-text',
+							'style': 'width:300px;',
+							'placeholder': 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空直连）'
+						}),
+						E('button', {
+							'class': 'btn cbi-button cbi-button-save',
+							'click': function() { self.handleUpdateProxy(); }
+						}, '保存代理')
+					]),
 					E('div', { 'id': 'hc-upd-msg', 'style': 'color:#555;font-size:13px;margin-bottom:8px;' }, ''),
 					E('div', { 'class': 'cbi-value-description' },
-						'版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo。')
+						'版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo、update_proxy。')
 				])
 			])
 		]);

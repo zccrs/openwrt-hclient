@@ -17,6 +17,7 @@
 #   HCLIENT_UPDATE_BIN            default /usr/libexec/hclient-update
 #   HCLIENT_UPDATE_START_DELAY    daemon first-check delay (seconds)
 #   HCLIENT_UPDATE_DRY_RUN=1      download/verify only, never install
+#   HCLIENT_UPDATE_PROXY          proxy URL override (also UCI update_proxy)
 
 REPO_DEFAULT="zccrs/openwrt-hclient"
 
@@ -152,26 +153,61 @@ write_state() {
 	} > "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE"
 }
 
+proxy_value() {
+	if [ -n "${HCLIENT_UPDATE_PROXY:-}" ]; then
+		printf '%s' "$HCLIENT_UPDATE_PROXY"
+	else
+		uci_get update_proxy ""
+	fi
+}
+
+# Normalize "host:port" to "http://host:port"; keep explicit schemes as-is.
+proxy_url() {
+	local val
+	val="$(proxy_value)"
+	val="$(printf '%s' "$val" | tr -d ' \t\r\n')"
+	if [ -n "$val" ]; then
+		case "$val" in
+			*://*) ;;
+			*) val="http://$val" ;;
+		esac
+	fi
+	printf '%s' "$val"
+}
+
+run_http() {
+	local proxy="$1"
+	shift
+	if [ -n "$proxy" ]; then
+		env http_proxy="$proxy" https_proxy="$proxy" \
+			HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" "$@"
+	else
+		"$@"
+	fi
+}
+
 http_get() {
 	local url="$1"
 	local out="$2"
+	local proxy
+	proxy="$(proxy_url)"
 	if command -v curl >/dev/null 2>&1; then
 		if [ -n "$out" ]; then
-			curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 -o "$out" "$url"
+			run_http "$proxy" curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 -o "$out" "$url"
 		else
-			curl -fsSL --connect-timeout 15 --max-time 60 "$url"
+			run_http "$proxy" curl -fsSL --connect-timeout 15 --max-time 60 "$url"
 		fi
 	elif command -v uclient-fetch >/dev/null 2>&1; then
 		if [ -n "$out" ]; then
-			uclient-fetch -q -O "$out" "$url"
+			run_http "$proxy" uclient-fetch -q -O "$out" "$url"
 		else
-			uclient-fetch -q -O - "$url"
+			run_http "$proxy" uclient-fetch -q -O - "$url"
 		fi
 	elif command -v wget >/dev/null 2>&1; then
 		if [ -n "$out" ]; then
-			wget -q -O "$out" "$url"
+			run_http "$proxy" wget -q -O "$out" "$url"
 		else
-			wget -q -O - "$url"
+			run_http "$proxy" wget -q -O - "$url"
 		fi
 	else
 		return 127
@@ -229,7 +265,7 @@ fetch_latest_tag() {
 emit_result() {
 	local ok="$1"
 	local out="$2"
-	printf '{"ok":%s,"installed":"%s","latest":"%s","update_available":%s,"arch":"%s","repo":"%s","auto_update":%s,"interval_hours":"%s","checked_at":"%s","state":"%s","output":"%s"}\n' \
+	printf '{"ok":%s,"installed":"%s","latest":"%s","update_available":%s,"arch":"%s","repo":"%s","auto_update":%s,"interval_hours":"%s","proxy":"%s","checked_at":"%s","state":"%s","output":"%s"}\n' \
 		"$ok" \
 		"$(json_escape "$CHK_INSTALLED")" \
 		"$(json_escape "$CHK_LATEST")" \
@@ -238,6 +274,7 @@ emit_result() {
 		"$(json_escape "$(repo_name)")" \
 		"$(auto_update_json)" \
 		"$(json_escape "$(interval_hours)")" \
+		"$(json_escape "$(proxy_value)")" \
 		"$(json_escape "$CHK_CHECKED")" \
 		"$(json_escape "$CHK_STATE")" \
 		"$(json_escape "$out")"

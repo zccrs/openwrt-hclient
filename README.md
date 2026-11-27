@@ -21,7 +21,7 @@
 3. **GitHub 在线版本检测与自更新**：
    - LuCI 页面显示**已安装版本**与 **GitHub Releases 最新版本**，支持网页一键**检查更新**、**立即下载并更新**。
    - 内置 `hclient-update` 后台服务，默认每 24 小时自动检查 GitHub Releases；发现新版本时下载对应架构 IPK、**强制校验 SHA256** 后通过 `opkg` 原地升级并自动重启服务。
-   - 全部行为可通过 UCI 配置：`update_enabled`（自动更新开关）、`update_interval_hours`（检查周期）、`update_repo`（自定义 GitHub 仓库，适配 fork/自建分支）。
+   - 全部行为可通过 UCI 配置：`update_enabled`（自动更新开关）、`update_interval_hours`（检查周期）、`update_repo`（自定义 GitHub 仓库，适配 fork/自建分支）、`update_proxy`（GitHub 访问代理，支持 HTTP/SOCKS5）。
 
 ---
 
@@ -79,7 +79,13 @@ uci set hclient.config.update_interval_hours='24'
 uci set hclient.config.update_repo='zccrs/openwrt-hclient'
 uci commit hclient
 /etc/init.d/hclient-update enable
+
+# 可选：GitHub 无法直连时配置代理（支持 http://、socks5://、socks5h://）
+uci set hclient.config.update_proxy='http://127.0.0.1:7890'
+uci commit hclient
 ```
+
+GitHub 访问需要代理时，可在 LuCI 第六节「更新代理」输入框或通过上述 `update_proxy` 设置。代理同时作用于**版本检查**与 **IPK 下载**；不带协议时自动补 `http://`（如 `127.0.0.1:7890`），留空或删除该选项即恢复直连。`uclient-fetch` 仅支持 HTTP 代理，SOCKS5 代理需安装 `curl`。
 
 更新流程：GitHub API 查询最新 Release → 按本机 `uname -m` 匹配 `amd64/arm64/riscv64` 资产 → 下载 `hclient-cli_<版本>_<架构>.ipk` 与 `SHA256SUMS` → 校验通过后 `opkg install --force-reinstall` → 服务自动重启。更新过程中的日志可通过 `logread -e hclient-update` 查看，最近一次检查结果缓存在 `/etc/hclient/update.state`。
 

@@ -349,8 +349,28 @@ case "$ACTION" in
 		printf '{"ok":true,"update_enabled":%s,"output":"自动更新已%s"}\n' "$EN" "$( [ "$EN" = "1" ] && echo '开启' || echo '关闭')"
 		;;
 
+	update_proxy)
+		PROXY="$1"
+		PROXY="$(printf '%s' "$PROXY" | tr -d ' \t\r\n')"
+		if command -v uci >/dev/null 2>&1; then
+			if [ -n "$PROXY" ]; then
+				uci -q set hclient.config.update_proxy="$PROXY"
+			else
+				uci -q delete hclient.config.update_proxy
+			fi
+			uci -q commit hclient
+		fi
+		if [ -n "$PROXY" ]; then
+			printf '{"ok":true,"proxy":"%s","output":"更新代理已设置为 %s"}\n' \
+				"$(printf '%s' "$PROXY" | json_escape)" \
+				"$(printf '%s' "$PROXY" | json_escape)"
+		else
+			printf '{"ok":true,"proxy":"","output":"更新代理已清除，恢复直连"}\n'
+		fi
+		;;
+
 	*)
-		printf '{"ok":false,"output":"Usage: hclient-call <status|service_action|save_config|login_qr|login_manual|login_tfa|box_action|check|netdiag|logs|update_status|update_check|update_apply|update_enabled>"}\n'
+		printf '{"ok":false,"output":"Usage: hclient-call <status|service_action|save_config|login_qr|login_manual|login_tfa|box_action|check|netdiag|logs|update_status|update_check|update_apply|update_enabled|update_proxy>"}\n'
 		exit 1
 		;;
 esac

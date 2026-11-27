@@ -159,8 +159,13 @@
 					<span>自动检测并安装新版本</span>
 				</label>
 			</div>
+			<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+				<span>更新代理：</span>
+				<input id="hc-upd-proxy" type="text" class="cbi-input-text" style="width:300px;" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空直连）" />
+				<input type="button" class="btn cbi-button cbi-button-save" value="保存代理" onclick="hcUpdateProxy()" />
+			</div>
 			<div id="hc-upd-msg" style="color:#555;font-size:13px;margin-bottom:8px;"></div>
-			<div class="cbi-value-description">版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo。</div>
+			<div class="cbi-value-description">版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo、update_proxy。</div>
 		</div>
 	</div>
 </div>
@@ -332,6 +337,10 @@ function hcUpdateRender(res) {
 	stateEl.style.background = isError ? '#dc2626' : (isNew ? '#d97706' : '#16a34a');
 
 	document.getElementById('hc-upd-auto').checked = (res.auto_update === true);
+	var proxyEl = document.getElementById('hc-upd-proxy');
+	if (proxyEl && document.activeElement !== proxyEl) {
+		proxyEl.value = res.proxy || '';
+	}
 	document.getElementById('hc-upd-msg').textContent = res.output || '';
 }
 
@@ -356,6 +365,14 @@ function hcUpdateApply() {
 
 function hcUpdateToggle(enabled) {
 	hcApi({ cmd: 'update_enabled', a1: enabled ? '1' : '0' }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcUpdateRefresh();
+	});
+}
+
+function hcUpdateProxy() {
+	var el = document.getElementById('hc-upd-proxy');
+	hcApi({ cmd: 'update_proxy', a1: el ? el.value.trim() : '' }, function(res) {
 		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
 		hcUpdateRefresh();
 	});
