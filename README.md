@@ -87,6 +87,20 @@ uci commit hclient
 
 GitHub 访问需要代理时，可在 LuCI 第六节「更新代理」输入框或通过上述 `update_proxy` 设置。代理同时作用于**版本检查**与 **IPK 下载**；不带协议时自动补 `http://`（如 `127.0.0.1:7890`），留空或删除该选项即恢复直连。`uclient-fetch` 仅支持 HTTP 代理，SOCKS5 代理需安装 `curl`。
 
+需要认证的代理直接把用户名密码写进 URL（特殊字符需百分号编码）：
+
+```bash
+# HTTP 代理认证
+uci set hclient.config.update_proxy='http://alice:p%40ss%3Aw%2Frd@127.0.0.1:7890'
+
+# SOCKS5 代理认证（需安装 curl）
+uci set hclient.config.update_proxy='socks5://alice:secret@127.0.0.1:1080'
+
+uci commit hclient
+```
+
+常用编码：`@`→`%40`、`:`→`%3A`、`/`→`%2F`、`?`→`%3F`、`#`→`%23`、`%`→`%25`、空格→`%20`。例如密码 `p@ss:w/rd` 写作 `p%40ss%3Aw%2Frd`。代理地址（含密码）以明文保存在 `/etc/config/hclient`，LuCI 输入框会回显完整地址，请控制好后台访问权限。
+
 更新流程：GitHub API 查询最新 Release → 按本机 `uname -m` 匹配 `amd64/arm64/riscv64` 资产 → 下载 `hclient-cli_<版本>_<架构>.ipk` 与 `SHA256SUMS` → 校验通过后 `opkg install --force-reinstall` → 服务自动重启。更新过程中的日志可通过 `logread -e hclient-update` 查看，最近一次检查结果缓存在 `/etc/hclient/update.state`。
 
 > **注意**：`update_enabled='0'` 会同时关闭定时检查与自动安装（手动检查/更新仍可用）；自动更新需要路由器可直连 `github.com` 且系统时间正确（HTTPS 证书校验）。

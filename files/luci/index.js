@@ -683,7 +683,7 @@ return view.extend({
 							'type': 'text',
 							'class': 'cbi-input-text',
 							'style': 'width:300px;',
-							'placeholder': 'http://127.0.0.1:7890 或 socks5://127.0.0.1:1080（留空直连）'
+							'placeholder': 'http://user:pass@127.0.0.1:7890 或 socks5://user:pass@127.0.0.1:1080（留空直连）'
 						}),
 						E('button', {
 							'class': 'btn cbi-button cbi-button-save',
