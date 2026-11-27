@@ -54,9 +54,12 @@ populate_common_files() {
 	mkdir -p "$stage/www/luci-static/resources/view/hclient"
 	mkdir -p "$stage/usr/lib/lua/luci/controller"
 	mkdir -p "$stage/usr/lib/lua/luci/view/hclient"
+	mkdir -p "$stage/usr/share/hclient"
 
 	cp -f "$ROOT_DIR/files/hclient-call" "$stage/usr/libexec/hclient-call"
+	cp -f "$ROOT_DIR/files/hclient-update" "$stage/usr/libexec/hclient-update"
 	cp -f "$ROOT_DIR/files/hclient.init" "$stage/etc/init.d/hclient"
+	cp -f "$ROOT_DIR/files/hclient-update.init" "$stage/etc/init.d/hclient-update"
 	cp -f "$ROOT_DIR/files/hclient.config" "$stage/etc/config/hclient"
 	cp -f "$ROOT_DIR/files/99-luci-hclient" "$stage/etc/uci-defaults/99-luci-hclient"
 	cp -f "$ROOT_DIR/files/luci/menu.json" "$stage/usr/share/luci/menu.d/luci-app-hclient.json"
@@ -64,6 +67,7 @@ populate_common_files() {
 	cp -f "$ROOT_DIR/files/luci/index.js" "$stage/www/luci-static/resources/view/hclient/index.js"
 	cp -f "$ROOT_DIR/files/luci/controller.lua" "$stage/usr/lib/lua/luci/controller/hclient.lua"
 	cp -f "$ROOT_DIR/files/luci/index.htm" "$stage/usr/lib/lua/luci/view/hclient/index.htm"
+	printf '%s\n' "${PKG_VERSION}-${PKG_REL}" > "$stage/usr/share/hclient/package-version"
 
 	cat > "$stage/CONTROL/conffiles" << 'EOF'
 /etc/config/hclient
@@ -80,6 +84,9 @@ EOF
 		/etc/init.d/rpcd reload >/dev/null 2>&1 || true
 		rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null || true
 	fi
+	# start (not restart): never kill the updater that is installing this package
+	/etc/init.d/hclient-update enable >/dev/null 2>&1 || true
+	/etc/init.d/hclient-update start >/dev/null 2>&1 || true
 }
 exit 0
 EOF
@@ -89,6 +96,10 @@ EOF
 [ -n "$IPKG_INSTROOT" ] || {
 	/etc/init.d/hclient stop >/dev/null 2>&1 || true
 	/etc/init.d/hclient disable >/dev/null 2>&1 || true
+	if [ -z "$HCLIENT_UPDATE_RUNNING" ]; then
+		/etc/init.d/hclient-update stop >/dev/null 2>&1 || true
+		/etc/init.d/hclient-update disable >/dev/null 2>&1 || true
+	fi
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null || true
 }
 exit 0
@@ -97,8 +108,11 @@ EOF
 	find "$stage" -type d -exec chmod 755 {} +
 	find "$stage" -type f -exec chmod 644 {} +
 	chmod 755 "$stage/usr/libexec/hclient-call"
+	chmod 755 "$stage/usr/libexec/hclient-update"
 	chmod 755 "$stage/etc/init.d/hclient"
+	chmod 755 "$stage/etc/init.d/hclient-update"
 	chmod 755 "$stage/etc/uci-defaults/99-luci-hclient"
+	chmod 644 "$stage/usr/share/hclient/package-version"
 	chmod 755 "$stage/CONTROL/postinst"
 	chmod 755 "$stage/CONTROL/prerm"
 }

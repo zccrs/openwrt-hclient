@@ -1,0 +1,459 @@
+#!/bin/sh
+# hclient-update - GitHub Releases self-updater for the hclient-cli OpenWrt package.
+#
+# Commands:
+#   status   Print cached version information as JSON (no network access)
+#   check    Query GitHub for the latest release, cache the result, print JSON
+#   apply    Check, download, verify SHA256 and install the newest .ipk
+#   auto     Same as apply, but silently exits when already up to date
+#   daemon   Periodic auto-update loop (started by /etc/init.d/hclient-update)
+#
+# Environment overrides (mainly for testing):
+#   HCLIENT_UPDATE_REPO           GitHub "owner/repo" override
+#   HCLIENT_UPDATE_STATE_DIR      default /etc/hclient
+#   HCLIENT_UPDATE_TMP_DIR        default /tmp/hclient-update
+#   HCLIENT_UPDATE_VERSION_FILE   default /usr/share/hclient/package-version
+#   HCLIENT_UPDATE_CONTROL_FILE   default /usr/lib/opkg/info/hclient-cli.control
+#   HCLIENT_UPDATE_BIN            default /usr/libexec/hclient-update
+#   HCLIENT_UPDATE_START_DELAY    daemon first-check delay (seconds)
+#   HCLIENT_UPDATE_DRY_RUN=1      download/verify only, never install
+
+REPO_DEFAULT="zccrs/openwrt-hclient"
+
+STATE_DIR="${HCLIENT_UPDATE_STATE_DIR:-/etc/hclient}"
+STATE_FILE="$STATE_DIR/update.state"
+TMP_DIR="${HCLIENT_UPDATE_TMP_DIR:-/tmp/hclient-update}"
+VERSION_FILE="${HCLIENT_UPDATE_VERSION_FILE:-/usr/share/hclient/package-version}"
+CONTROL_FILE="${HCLIENT_UPDATE_CONTROL_FILE:-/usr/lib/opkg/info/hclient-cli.control}"
+UPDATER_BIN="${HCLIENT_UPDATE_BIN:-/usr/libexec/hclient-update}"
+START_DELAY="${HCLIENT_UPDATE_START_DELAY:-60}"
+DRY_RUN="${HCLIENT_UPDATE_DRY_RUN:-0}"
+
+CHK_ARCH=""
+CHK_INSTALLED=""
+CHK_LATEST=""
+CHK_AVAIL="false"
+CHK_STATE="unknown"
+CHK_CHECKED=""
+CHK_ERROR=""
+INSTALL_OUT=""
+
+log() {
+	logger -t hclient-update "$*" 2>/dev/null || true
+}
+
+json_escape() {
+	printf '%s' "$1" | awk '
+	BEGIN { ORS="" }
+	{
+		gsub(/\\/, "\\\\")
+		gsub(/"/, "\\\"")
+		gsub(/\r/, "")
+		gsub(/\t/, "\\t")
+		if (NR > 1) printf "\\n"
+		printf "%s", $0
+	}'
+}
+
+uci_get() {
+	local val=""
+	if command -v uci >/dev/null 2>&1; then
+		val="$(uci -q get "hclient.config.$1" 2>/dev/null)"
+	fi
+	if [ -n "$val" ]; then
+		printf '%s' "$val"
+	else
+		printf '%s' "$2"
+	fi
+}
+
+repo_name() {
+	if [ -n "${HCLIENT_UPDATE_REPO:-}" ]; then
+		printf '%s' "$HCLIENT_UPDATE_REPO"
+	else
+		uci_get update_repo "$REPO_DEFAULT"
+	fi
+}
+
+interval_hours() {
+	local val
+	val="$(uci_get update_interval_hours 24)"
+	case "$val" in
+		''|*[!0-9]*) val=24 ;;
+	esac
+	[ "$val" -ge 1 ] 2>/dev/null || val=24
+	printf '%s' "$val"
+}
+
+auto_update_json() {
+	if [ "$(uci_get update_enabled 1)" = "1" ]; then
+		printf 'true'
+	else
+		printf 'false'
+	fi
+}
+
+arch_name() {
+	case "$(uname -m)" in
+		x86_64|amd64) echo amd64 ;;
+		aarch64|arm64) echo arm64 ;;
+		riscv64) echo riscv64 ;;
+		*) return 1 ;;
+	esac
+}
+
+installed_version() {
+	local ver=""
+	if [ -f "$CONTROL_FILE" ]; then
+		ver="$(sed -n 's/^Version:[[:space:]]*//p' "$CONTROL_FILE" 2>/dev/null | head -n 1)"
+	fi
+	if [ -z "$ver" ] && [ -f "$VERSION_FILE" ]; then
+		ver="$(cat "$VERSION_FILE" 2>/dev/null)"
+	fi
+	printf '%s' "$ver" | tr -d ' \t\r\n'
+}
+
+# Prints "1" when version $1 is newer than version $2, otherwise "0".
+version_gt() {
+	awk -v a="$1" -v b="$2" '
+	function splitver(s, arr,   p, n) {
+		n = split(s, p, "-")
+		rel = (n > 1) ? p[2] + 0 : 0
+		return split(p[1], arr, ".")
+	}
+	BEGIN {
+		na = splitver(a, x)
+		ra = rel
+		nb = splitver(b, y)
+		rb = rel
+		n = (na > nb) ? na : nb
+		for (i = 1; i <= n; i++) {
+			xv = (i <= na) ? x[i] + 0 : 0
+			yv = (i <= nb) ? y[i] + 0 : 0
+			if (xv > yv) { print 1; exit }
+			if (xv < yv) { print 0; exit }
+		}
+		print (ra > rb) ? 1 : 0
+	}'
+}
+
+state_get() {
+	[ -f "$STATE_FILE" ] || return 0
+	sed -n "s/^$1=//p" "$STATE_FILE" 2>/dev/null | head -n 1
+}
+
+write_state() {
+	mkdir -p "$STATE_DIR" 2>/dev/null || true
+	{
+		printf 'LATEST=%s\n' "$1"
+		printf 'CHECKED=%s\n' "$2"
+		printf 'STATUS=%s\n' "$3"
+		printf 'MESSAGE=%s\n' "$4"
+	} > "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+http_get() {
+	local url="$1"
+	local out="$2"
+	if command -v curl >/dev/null 2>&1; then
+		if [ -n "$out" ]; then
+			curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 -o "$out" "$url"
+		else
+			curl -fsSL --connect-timeout 15 --max-time 60 "$url"
+		fi
+	elif command -v uclient-fetch >/dev/null 2>&1; then
+		if [ -n "$out" ]; then
+			uclient-fetch -q -O "$out" "$url"
+		else
+			uclient-fetch -q -O - "$url"
+		fi
+	elif command -v wget >/dev/null 2>&1; then
+		if [ -n "$out" ]; then
+			wget -q -O "$out" "$url"
+		else
+			wget -q -O - "$url"
+		fi
+	else
+		return 127
+	fi
+}
+
+fetch_latest_tag() {
+	local repo json html tag
+	repo="$(repo_name)"
+
+	json="$(http_get "https://api.github.com/repos/$repo/releases/latest" "" 2>/dev/null)"
+	if [ -n "$json" ]; then
+		tag="$(printf '%s\n' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+		if [ -n "$tag" ]; then
+			printf '%s' "${tag#v}"
+			return 0
+		fi
+	fi
+
+	# Fallback: read the redirect target of the /releases/latest page.
+	html="$(http_get "https://github.com/$repo/releases/latest" "" 2>/dev/null)"
+	if [ -n "$html" ]; then
+		tag="$(printf '%s\n' "$html" | sed -n 's|.*/releases/tag/\([^"/?]*\).*|\1|p' | head -n 1)"
+		if [ -n "$tag" ]; then
+			printf '%s' "${tag#v}"
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+emit_result() {
+	local ok="$1"
+	local out="$2"
+	printf '{"ok":%s,"installed":"%s","latest":"%s","update_available":%s,"arch":"%s","repo":"%s","auto_update":%s,"interval_hours":"%s","checked_at":"%s","state":"%s","output":"%s"}\n' \
+		"$ok" \
+		"$(json_escape "$CHK_INSTALLED")" \
+		"$(json_escape "$CHK_LATEST")" \
+		"$CHK_AVAIL" \
+		"$(json_escape "$CHK_ARCH")" \
+		"$(json_escape "$(repo_name)")" \
+		"$(auto_update_json)" \
+		"$(json_escape "$(interval_hours)")" \
+		"$(json_escape "$CHK_CHECKED")" \
+		"$(json_escape "$CHK_STATE")" \
+		"$(json_escape "$out")"
+}
+
+run_check() {
+	CHK_ERROR=""
+	CHK_AVAIL="false"
+	CHK_ARCH="$(arch_name)"
+	CHK_INSTALLED="$(installed_version)"
+	CHK_LATEST=""
+	CHK_STATE="unknown"
+
+	if [ -z "$CHK_ARCH" ]; then
+		CHK_ERROR="不支持的 CPU 架构：$(uname -m)"
+		CHK_STATE="error"
+		return 1
+	fi
+	if [ -z "$CHK_INSTALLED" ]; then
+		CHK_ERROR="无法读取已安装版本"
+		CHK_STATE="error"
+		return 1
+	fi
+
+	CHK_LATEST="$(fetch_latest_tag)"
+	if [ -z "$CHK_LATEST" ]; then
+		CHK_ERROR="无法从 GitHub 获取最新版本（网络不可达或 API 限流）"
+		CHK_STATE="error"
+		CHK_LATEST="$(state_get LATEST)"
+		CHK_CHECKED="$(state_get CHECKED)"
+		write_state "$CHK_LATEST" "$CHK_CHECKED" "error" "$CHK_ERROR"
+		return 1
+	fi
+
+	CHK_CHECKED="$(date '+%Y-%m-%d %H:%M:%S')"
+	if [ "$(version_gt "$CHK_LATEST" "$CHK_INSTALLED")" = "1" ]; then
+		CHK_AVAIL="true"
+		CHK_STATE="new"
+		write_state "$CHK_LATEST" "$CHK_CHECKED" "new" "发现新版本 $CHK_LATEST"
+	else
+		CHK_AVAIL="false"
+		CHK_STATE="current"
+		write_state "$CHK_LATEST" "$CHK_CHECKED" "current" "已是最新版本"
+	fi
+	return 0
+}
+
+do_install() {
+	local repo file base ipk want got out rc newver work
+	repo="$(repo_name)"
+	file="hclient-cli_${CHK_LATEST}_${CHK_ARCH}.ipk"
+	base="https://github.com/$repo/releases/download/v${CHK_LATEST}"
+	work="$TMP_DIR/work"
+	ipk="$work/$file"
+
+	# Keep downloads in a subdirectory: the daemon runs itself from a copy in
+	# $TMP_DIR that must survive the cleanup below.
+	rm -rf "$work"
+	mkdir -p "$work" 2>/dev/null || true
+
+	log "downloading $base/$file"
+	if ! http_get "$base/$file" "$ipk" || [ ! -s "$ipk" ]; then
+		INSTALL_OUT="下载失败：$base/$file"
+		return 1
+	fi
+
+	if ! http_get "$base/SHA256SUMS" "$work/SHA256SUMS" || [ ! -s "$work/SHA256SUMS" ]; then
+		INSTALL_OUT="下载 SHA256SUMS 失败，已中止安装"
+		rm -f "$ipk"
+		return 1
+	fi
+	want="$(awk -v f="$file" '$2 == f { print $1; exit }' "$work/SHA256SUMS")"
+	if [ -z "$want" ]; then
+		INSTALL_OUT="SHA256SUMS 中未找到 $file，已中止安装"
+		rm -f "$ipk"
+		return 1
+	fi
+	got="$(sha256sum "$ipk" | awk '{print $1}')"
+	if [ "$got" != "$want" ]; then
+		INSTALL_OUT="SHA256 校验失败（期望 $want，实际 $got）"
+		rm -f "$ipk"
+		return 1
+	fi
+	log "checksum verified: $got"
+
+	if [ "$DRY_RUN" = "1" ]; then
+		INSTALL_OUT="dry-run：已下载并校验 $file，未执行安装"
+		rm -f "$ipk"
+		return 0
+	fi
+
+	if ! command -v opkg >/dev/null 2>&1; then
+		INSTALL_OUT="未找到 opkg，无法安装更新"
+		rm -f "$ipk"
+		return 1
+	fi
+
+	# HCLIENT_UPDATE_RUNNING makes prerm/postinst skip restarting this updater
+	# service, otherwise procd would kill opkg while it is still running.
+	out="$(HCLIENT_UPDATE_RUNNING=1 opkg install --force-reinstall "$ipk" </dev/null 2>&1)"
+	rc=$?
+	INSTALL_OUT="$out"
+	rm -f "$ipk"
+
+	if [ "$rc" -ne 0 ]; then
+		[ -n "$INSTALL_OUT" ] || INSTALL_OUT="opkg install 失败（退出码 $rc）"
+		return 1
+	fi
+
+	newver="$(installed_version)"
+	if [ -n "$newver" ]; then
+		CHK_INSTALLED="$newver"
+	fi
+	if [ "$(version_gt "$CHK_LATEST" "$CHK_INSTALLED")" = "1" ]; then
+		CHK_AVAIL="true"
+		CHK_STATE="new"
+		INSTALL_OUT="$INSTALL_OUT
+安装在完成后校验失败：当前版本仍为 $CHK_INSTALLED"
+		return 1
+	fi
+	CHK_AVAIL="false"
+	CHK_STATE="current"
+	write_state "$CHK_LATEST" "$CHK_CHECKED" "current" "已更新到 $CHK_INSTALLED"
+	return 0
+}
+
+cmd_status() {
+	CHK_ARCH="$(arch_name)"
+	CHK_INSTALLED="$(installed_version)"
+	CHK_LATEST="$(state_get LATEST)"
+	CHK_CHECKED="$(state_get CHECKED)"
+	CHK_STATE="$(state_get STATUS)"
+	[ -n "$CHK_STATE" ] || CHK_STATE="unknown"
+	CHK_AVAIL="false"
+	if [ -n "$CHK_LATEST" ] && [ -n "$CHK_INSTALLED" ]; then
+		if [ "$(version_gt "$CHK_LATEST" "$CHK_INSTALLED")" = "1" ]; then
+			CHK_AVAIL="true"
+		fi
+	fi
+	if [ "$CHK_STATE" = "error" ]; then
+		emit_result false "$(state_get MESSAGE)"
+	elif [ "$CHK_STATE" = "unknown" ]; then
+		emit_result true "尚未检查过更新"
+	elif [ "$CHK_AVAIL" = "true" ]; then
+		emit_result true "发现新版本 $CHK_LATEST（当前 $CHK_INSTALLED）"
+	else
+		emit_result true "已是最新版本（$CHK_INSTALLED）"
+	fi
+}
+
+cmd_check() {
+	run_check
+	if [ -n "$CHK_ERROR" ]; then
+		emit_result false "检查失败：$CHK_ERROR"
+		return 1
+	elif [ "$CHK_AVAIL" = "true" ]; then
+		emit_result true "发现新版本 $CHK_LATEST（当前 $CHK_INSTALLED）"
+	else
+		emit_result true "已是最新版本（$CHK_INSTALLED）"
+	fi
+	return 0
+}
+
+cmd_apply() {
+	run_check
+	if [ -n "$CHK_ERROR" ]; then
+		emit_result false "检查失败：$CHK_ERROR"
+		return 1
+	fi
+	if [ "$CHK_AVAIL" != "true" ]; then
+		emit_result true "已是最新版本（$CHK_INSTALLED）"
+		return 0
+	fi
+
+	log "updating $CHK_INSTALLED -> $CHK_LATEST"
+	if do_install; then
+		emit_result true "更新流程已完成（当前版本 $CHK_INSTALLED）。$INSTALL_OUT"
+		return 0
+	fi
+	emit_result false "更新失败：$INSTALL_OUT"
+	return 1
+}
+
+cmd_auto() {
+	run_check
+	if [ -n "$CHK_ERROR" ]; then
+		log "更新检查失败：$CHK_ERROR"
+		return 1
+	fi
+	if [ "$CHK_AVAIL" != "true" ]; then
+		log "已是最新版本（$CHK_INSTALLED）"
+		return 0
+	fi
+	log "发现新版本 $CHK_LATEST（当前 $CHK_INSTALLED），开始自动更新"
+	if do_install; then
+		log "自动更新完成：$CHK_INSTALLED"
+		return 0
+	fi
+	log "自动更新失败：$INSTALL_OUT"
+	return 1
+}
+
+cmd_daemon() {
+	case "$START_DELAY" in
+		''|*[!0-9]*) START_DELAY=60 ;;
+	esac
+	[ "$START_DELAY" -gt 0 ] && sleep "$START_DELAY"
+
+	while :; do
+		local delay
+		delay="$(( $(interval_hours) * 3600 ))"
+		if [ "$(uci_get update_enabled 1)" = "1" ]; then
+			mkdir -p "$TMP_DIR" 2>/dev/null || true
+			if cp -f "$UPDATER_BIN" "$TMP_DIR/auto.sh" 2>/dev/null; then
+				if ! /bin/sh "$TMP_DIR/auto.sh" auto >/dev/null 2>&1; then
+					# Network hiccup / opkg lock: retry in an hour instead of
+					# waiting a whole interval.
+					delay=3600
+				fi
+			else
+				log "无法复制更新脚本 $UPDATER_BIN"
+			fi
+		fi
+		sleep "$delay"
+	done
+}
+
+case "$1" in
+	status) cmd_status ;;
+	check) cmd_check ;;
+	apply) cmd_apply ;;
+	auto) cmd_auto ;;
+	daemon) cmd_daemon ;;
+	version)
+		printf 'repo=%s\ninstalled=%s\narch=%s\n' "$(repo_name)" "$(installed_version)" "$(arch_name)"
+		;;
+	*)
+		echo "Usage: hclient-update <status|check|apply|auto|daemon|version>" >&2
+		exit 1
+		;;
+esac

@@ -18,6 +18,10 @@
    - **局域网共享转发 (`lan_access`)**：自动注册 `hclient` 防火墙区域（放行 `heiyu-+` 转发并开启 NAT66 伪装），让局域网内的手机/电脑无需安装客户端即可通过路由器直连微服。
    - **Dnsmasq 域名自动分流 (`dns_forward`)**：自动将 `*.heiyu.space` 解析指向微服虚拟 DNS（`fc03:1136:3800::1`）并加入防 DNS 重绑定白名单。
    - **自动绑定 `:1` 内核直通地址**：自动在 `heiyu-0` 网卡上挂载末尾为 `:1` 的 IPv6 地址（绕过 `hclient-cli` 用户态 gVisor 对 `:0` 地址 80/22 端口的拦截），支持从远端直接通过虚拟 IPv6 `:1` 访问 OpenWrt 路由器的 Web 后台与 SSH。
+3. **GitHub 在线版本检测与自更新**：
+   - LuCI 页面显示**已安装版本**与 **GitHub Releases 最新版本**，支持网页一键**检查更新**、**立即下载并更新**。
+   - 内置 `hclient-update` 后台服务，默认每 24 小时自动检查 GitHub Releases；发现新版本时下载对应架构 IPK、**强制校验 SHA256** 后通过 `opkg` 原地升级并自动重启服务。
+   - 全部行为可通过 UCI 配置：`update_enabled`（自动更新开关）、`update_interval_hours`（检查周期）、`update_repo`（自定义 GitHub 仓库，适配 fork/自建分支）。
 
 ---
 
@@ -52,6 +56,34 @@ opkg install /tmp/hclient-cli_*_amd64.ipk
 若路由器分配到的 `heiyu-0` 虚拟 IP 为 `fc03:1136:38c2:8463:5719:5b1:2d55:0`，服务启动时会自动在内核 `heiyu-0` 网卡上绑定 `:1` 地址：
 - 访问路由器 LuCI 后台：`http://[fc03:1136:38c2:8463:5719:5b1:2d55:1]/`
 - SSH 登录路由器：`ssh root@fc03:1136:38c2:8463:5719:5b1:2d55:1`
+
+### 4. 在线版本检测与自动更新
+安装包内置 `hclient-update` 与 `/etc/init.d/hclient-update` 服务，通过 [GitHub Releases](https://github.com/zccrs/openwrt-hclient/releases) 检测并安装新版本：
+
+- **LuCI 页面**：进入「懒猫微服 (HClient) → 六、 版本检测与在线自动更新」，可查看当前/最新版本、手动「检查更新」「立即下载并更新」，或勾选「自动检测并安装新版本」。
+- **命令行**：
+
+```bash
+# 立即检查 GitHub 最新版本（只检查，不安装）
+hclient-update check
+
+# 立即下载、校验 SHA256 并安装最新版本
+hclient-update apply
+
+# 查看缓存的版本状态
+hclient-update status
+
+# 自动更新配置（默认已开启，每 24 小时检查一次）
+uci set hclient.config.update_enabled='1'
+uci set hclient.config.update_interval_hours='24'
+uci set hclient.config.update_repo='zccrs/openwrt-hclient'
+uci commit hclient
+/etc/init.d/hclient-update enable
+```
+
+更新流程：GitHub API 查询最新 Release → 按本机 `uname -m` 匹配 `amd64/arm64/riscv64` 资产 → 下载 `hclient-cli_<版本>_<架构>.ipk` 与 `SHA256SUMS` → 校验通过后 `opkg install --force-reinstall` → 服务自动重启。更新过程中的日志可通过 `logread -e hclient-update` 查看，最近一次检查结果缓存在 `/etc/hclient/update.state`。
+
+> **注意**：`update_enabled='0'` 会同时关闭定时检查与自动安装（手动检查/更新仍可用）；自动更新需要路由器可直连 `github.com` 且系统时间正确（HTTPS 证书校验）。
 
 ---
 

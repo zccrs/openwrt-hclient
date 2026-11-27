@@ -141,6 +141,28 @@
 			<pre id="hc-console-out" style="background:#1e293b;color:#e2e8f0;padding:12px;border-radius:6px;font-family:monospace;font-size:12px;min-height:100px;max-height:420px;overflow:auto;white-space:pre-wrap;">点击上方按钮可执行环境检测、打洞诊断或读取实时运行日志。</pre>
 		</div>
 	</div>
+
+	<div class="cbi-section">
+		<h3>六、 版本检测与在线自动更新</h3>
+		<div class="cbi-section-node" style="padding:12px;">
+			<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:12px;">
+				<span><strong>已安装版本：</strong><span id="hc-upd-installed" style="font-family:monospace;">...</span></span>
+				<span><strong>GitHub 最新：</strong><span id="hc-upd-latest" style="font-family:monospace;">...</span></span>
+				<span id="hc-upd-state" style="padding:4px 10px;border-radius:4px;color:#fff;font-weight:bold;background:#6b7280;">读取中...</span>
+				<span><strong>上次检查：</strong><span id="hc-upd-checked">从未</span></span>
+			</div>
+			<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+				<input type="button" class="btn cbi-button cbi-button-action" value="检查更新" onclick="hcUpdateCheck()" />
+				<input type="button" class="btn cbi-button cbi-button-apply" value="立即下载并更新" onclick="hcUpdateApply()" />
+				<label style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;cursor:pointer;">
+					<input id="hc-upd-auto" type="checkbox" onchange="hcUpdateToggle(this.checked)" />
+					<span>自动检测并安装新版本</span>
+				</label>
+			</div>
+			<div id="hc-upd-msg" style="color:#555;font-size:13px;margin-bottom:8px;"></div>
+			<div class="cbi-value-description">版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo。</div>
+		</div>
+	</div>
 </div>
 
 <script type="text/javascript">
@@ -293,7 +315,54 @@ function hcDiag(cmd) {
 	});
 }
 
+function hcUpdateRefresh() {
+	hcApi({ cmd: 'update_status' }, hcUpdateRender);
+}
+
+function hcUpdateRender(res) {
+	res = res || {};
+	document.getElementById('hc-upd-installed').textContent = res.installed || '未知';
+	document.getElementById('hc-upd-latest').textContent = res.latest || '尚未检查';
+	document.getElementById('hc-upd-checked').textContent = res.checked_at || '从未';
+
+	var stateEl = document.getElementById('hc-upd-state');
+	var isError = (res.state === 'error');
+	var isNew = (res.update_available === true);
+	stateEl.textContent = isError ? '检查失败' : (isNew ? '发现新版本' : (res.state === 'unknown' ? '尚未检查' : '已是最新'));
+	stateEl.style.background = isError ? '#dc2626' : (isNew ? '#d97706' : '#16a34a');
+
+	document.getElementById('hc-upd-auto').checked = (res.auto_update === true);
+	document.getElementById('hc-upd-msg').textContent = res.output || '';
+}
+
+function hcUpdateCheck() {
+	document.getElementById('hc-console-out').textContent = '正在访问 GitHub 检查最新版本，请稍候...';
+	hcApi({ cmd: 'update_check' }, function(res) {
+		hcUpdateRender(res);
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+	});
+}
+
+function hcUpdateApply() {
+	if (!confirm('将从 GitHub 下载并安装最新版本，安装过程中懒猫服务会短暂重启。确定继续吗？')) {
+		return;
+	}
+	document.getElementById('hc-console-out').textContent = '正在下载并安装更新，请勿断电...';
+	hcApi({ cmd: 'update_apply' }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcUpdateRefresh();
+	});
+}
+
+function hcUpdateToggle(enabled) {
+	hcApi({ cmd: 'update_enabled', a1: enabled ? '1' : '0' }, function(res) {
+		document.getElementById('hc-console-out').textContent = (res && res.output) || '';
+		hcUpdateRefresh();
+	});
+}
+
 hcRefreshStatus(true);
+hcUpdateRefresh();
 setInterval(function() { hcRefreshStatus(false); }, 8000);
 </script>
 <%+footer%>

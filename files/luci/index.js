@@ -268,6 +268,87 @@ return view.extend({
 		}
 	},
 
+	refreshUpdateStatus: function() {
+		var self = this;
+		return callBackend(['update_status']).then(function(res) {
+			self.renderUpdateStatus(res || {});
+		});
+	},
+
+	renderUpdateStatus: function(res) {
+		var instEl = document.getElementById('hc-upd-installed');
+		if (instEl) {
+			instEl.textContent = res.installed || '未知';
+		}
+
+		var latestEl = document.getElementById('hc-upd-latest');
+		if (latestEl) {
+			latestEl.textContent = res.latest || '尚未检查';
+		}
+
+		var stateEl = document.getElementById('hc-upd-state');
+		if (stateEl) {
+			var isError = (res.state === 'error');
+			var isNew = (res.update_available === true);
+			stateEl.textContent = isError ? '检查失败' : (isNew ? '发现新版本' : (res.state === 'unknown' ? '尚未检查' : '已是最新'));
+			stateEl.style.background = isError ? '#dc2626' : (isNew ? '#d97706' : '#16a34a');
+		}
+
+		var chkEl = document.getElementById('hc-upd-checked');
+		if (chkEl) {
+			chkEl.textContent = res.checked_at || '从未';
+		}
+
+		var autoEl = document.getElementById('hc-upd-auto');
+		if (autoEl) {
+			autoEl.checked = (res.auto_update === true);
+		}
+
+		var msgEl = document.getElementById('hc-upd-msg');
+		if (msgEl) {
+			msgEl.textContent = res.output || '';
+		}
+	},
+
+	handleUpdateCheck: function() {
+		var self = this;
+		self.setConsoleOutput('正在访问 GitHub 检查最新版本，请稍候...');
+		return callBackend(['update_check']).then(function(res) {
+			self.renderUpdateStatus(res || {});
+			self.setConsoleOutput((res && res.output) ? res.output : JSON.stringify(res));
+		});
+	},
+
+	handleUpdateApply: function() {
+		var self = this;
+		if (!confirm('将从 GitHub 下载并安装最新版本，安装过程中懒猫服务会短暂重启。确定继续吗？')) {
+			return;
+		}
+		ui.showModal('正在下载并安装更新...', [
+			E('p', { 'class': 'spinning' }, '正在从 GitHub 下载最新 IPK、校验 SHA256 并安装，此过程请勿断电...')
+		]);
+		return callBackend(['update_apply']).then(function(res) {
+			return callBackend(['update_status']).then(function(st) {
+				ui.hideModal();
+				self.renderUpdateStatus(st || res || {});
+				self.setConsoleOutput((res && res.output) ? res.output : JSON.stringify(res));
+				if (res && res.ok) {
+					ui.addNotification(null, E('p', '更新完成，刷新页面可加载新版界面。'), 'info');
+				} else {
+					ui.addNotification(null, E('p', '更新失败，请查看下方输出信息。'), 'danger');
+				}
+			});
+		});
+	},
+
+	handleUpdateToggle: function(enabled) {
+		var self = this;
+		return callBackend(['update_enabled', enabled ? '1' : '0']).then(function(res) {
+			self.setConsoleOutput((res && res.output) ? res.output : '');
+			return self.refreshUpdateStatus();
+		});
+	},
+
 	render: function(st) {
 		st = st || {};
 		var self = this;
@@ -538,11 +619,58 @@ return view.extend({
 						'style': 'background:#1e293b;color:#e2e8f0;padding:12px;border-radius:6px;font-family:monospace;font-size:12px;min-height:100px;max-height:420px;overflow:auto;white-space:pre-wrap;'
 					}, '点击上方按钮可执行环境检测、打洞诊断或读取实时运行日志。')
 				])
+			]),
+
+			/* 6. Version Check & Self-Update */
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, '六、 版本检测与在线自动更新'),
+				E('div', { 'class': 'cbi-section-node', 'style': 'padding:12px;' }, [
+					E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:12px;' }, [
+						E('span', {}, [
+							E('strong', {}, '已安装版本：'),
+							E('span', { 'id': 'hc-upd-installed', 'style': 'font-family:monospace;' }, '...')
+						]),
+						E('span', {}, [
+							E('strong', {}, 'GitHub 最新：'),
+							E('span', { 'id': 'hc-upd-latest', 'style': 'font-family:monospace;' }, '...')
+						]),
+						E('span', {
+							'id': 'hc-upd-state',
+							'style': 'padding:4px 10px;border-radius:4px;color:#fff;font-weight:bold;background:#6b7280;'
+						}, '读取中...'),
+						E('span', {}, [
+							E('strong', {}, '上次检查：'),
+							E('span', { 'id': 'hc-upd-checked' }, '从未')
+						])
+					]),
+					E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;' }, [
+						E('button', {
+							'class': 'btn cbi-button cbi-button-action',
+							'click': function() { self.handleUpdateCheck(); }
+						}, '检查更新'),
+						E('button', {
+							'class': 'btn cbi-button cbi-button-apply',
+							'click': function() { self.handleUpdateApply(); }
+						}, '立即下载并更新'),
+						E('label', { 'style': 'display:inline-flex;align-items:center;gap:6px;margin-left:8px;cursor:pointer;' }, [
+							E('input', {
+								'id': 'hc-upd-auto',
+								'type': 'checkbox',
+								'change': function(ev) { self.handleUpdateToggle(ev.target.checked); }
+							}),
+							E('span', {}, '自动检测并安装新版本')
+						])
+					]),
+					E('div', { 'id': 'hc-upd-msg', 'style': 'color:#555;font-size:13px;margin-bottom:8px;' }, ''),
+					E('div', { 'class': 'cbi-value-description' },
+						'版本信息来自 GitHub Releases（默认仓库 zccrs/openwrt-hclient，下载后强制校验 SHA256 再安装）。自动更新由 /etc/init.d/hclient-update 后台服务按周期执行，相关 UCI 配置：update_enabled、update_interval_hours、update_repo。')
+				])
 			])
 		]);
 
 		setTimeout(function() {
 			self.renderBoxTable(st.boxes || []);
+			self.refreshUpdateStatus();
 		}, 0);
 
 		return root;

@@ -57,8 +57,12 @@ define Package/hclient-cli/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hclient-cli $(1)/usr/bin/hclient-cli
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/hclient-call $(1)/usr/libexec/hclient-call
+	$(INSTALL_BIN) ./files/hclient-update $(1)/usr/libexec/hclient-update
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/hclient.init $(1)/etc/init.d/hclient
+	$(INSTALL_BIN) ./files/hclient-update.init $(1)/etc/init.d/hclient-update
+	$(INSTALL_DIR) $(1)/usr/share/hclient
+	echo "$(PKG_VERSION)-$(PKG_RELEASE)" > $(1)/usr/share/hclient/package-version
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/hclient.config $(1)/etc/config/hclient
 	$(INSTALL_DIR) $(1)/etc/hclient/state
@@ -82,6 +86,9 @@ define Package/hclient-cli/postinst
 	if [ -x /etc/uci-defaults/99-luci-hclient ]; then
 		/etc/uci-defaults/99-luci-hclient && rm -f /etc/uci-defaults/99-luci-hclient
 	fi
+	# start (not restart): never kill the updater that is installing this package
+	/etc/init.d/hclient-update enable >/dev/null 2>&1 || true
+	/etc/init.d/hclient-update start >/dev/null 2>&1 || true
 }
 exit 0
 endef
@@ -91,6 +98,10 @@ define Package/hclient-cli/prerm
 [ -n "$$$$IPKG_INSTROOT" ] || {
 	/etc/init.d/hclient stop >/dev/null 2>&1 || true
 	/etc/init.d/hclient disable >/dev/null 2>&1 || true
+	if [ -z "$$$$HCLIENT_UPDATE_RUNNING" ]; then
+		/etc/init.d/hclient-update stop >/dev/null 2>&1 || true
+		/etc/init.d/hclient-update disable >/dev/null 2>&1 || true
+	fi
 	rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null || true
 }
 exit 0

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 PROG="${HCLIENT_PROG:-/usr/bin/hclient-cli}"
+UPDATER="${HCLIENT_UPDATER:-/usr/libexec/hclient-update}"
 STATE_DIR="${HCLIENT_STATE_DIR:-/etc/hclient/state}"
 export HOME=/root
 export HCLIENT_CLI_CFG="$STATE_DIR"
@@ -316,8 +317,40 @@ case "$ACTION" in
 			"$(printf '%s' "$APPLOG" | json_escape)"
 		;;
 
+	update_status|update_check|update_apply)
+		if [ ! -x "$UPDATER" ]; then
+			printf '{"ok":false,"output":"更新组件未安装（缺少 %s）"}\n' "$UPDATER"
+			exit 1
+		fi
+		case "$ACTION" in
+			update_status) "$UPDATER" status ;;
+			update_check) "$UPDATER" check ;;
+			update_apply) "$UPDATER" apply ;;
+		esac
+		;;
+
+	update_enabled)
+		EN="$1"
+		case "$EN" in
+			1|true|on) EN=1 ;;
+			*) EN=0 ;;
+		esac
+		if command -v uci >/dev/null 2>&1; then
+			uci -q set hclient.config.update_enabled="$EN"
+			uci -q commit hclient
+		fi
+		if [ "$EN" = "1" ]; then
+			/etc/init.d/hclient-update enable >/dev/null 2>&1 || true
+			/etc/init.d/hclient-update start >/dev/null 2>&1 || true
+		else
+			/etc/init.d/hclient-update stop >/dev/null 2>&1 || true
+			/etc/init.d/hclient-update disable >/dev/null 2>&1 || true
+		fi
+		printf '{"ok":true,"update_enabled":%s,"output":"自动更新已%s"}\n' "$EN" "$( [ "$EN" = "1" ] && echo '开启' || echo '关闭')"
+		;;
+
 	*)
-		printf '{"ok":false,"output":"Usage: hclient-call <status|service_action|save_config|login_qr|login_manual|login_tfa|box_action|check|netdiag|logs>"}\n'
+		printf '{"ok":false,"output":"Usage: hclient-call <status|service_action|save_config|login_qr|login_manual|login_tfa|box_action|check|netdiag|logs|update_status|update_check|update_apply|update_enabled>"}\n'
 		exit 1
 		;;
 esac

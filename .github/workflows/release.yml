@@ -108,6 +108,8 @@ jobs:
           - **懒猫上游内核版本**：\`${VER}\`
           - **OpenWrt 打包修订号**：\`-${PREL}\`（完整版本号：\`${PVER}-${PREL}\`）
 
+          > 🔄 **在线自更新**：已安装旧版本的用户可在 LuCI「懒猫微服 → 六、 版本检测与在线自动更新」点击「立即下载并更新」，或执行 \`hclient-update apply\`；默认每天自动检测并安装本仓库的最新 Release。
+
           本版本由 GitHub Actions 自动从懒猫官方源 (\`https://dl.lazycatmicroserver.com/hclient-cli/latest-version.json\`) 拉取 **amd64 / arm64 / riscv64** 三架构服务端二进制并打包生成。
 
           ### 📦 架构与安装包对照表

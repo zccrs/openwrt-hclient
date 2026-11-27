@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=99
+STOP=95
+
+start_service() {
+	config_load hclient
+
+	local enabled
+	config_get_bool enabled config update_enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	[ -x /usr/libexec/hclient-update ] || return 0
+
+	# Run the daemon from a /tmp copy so upgrading the package cannot rewrite
+	# the script while the shell is still reading it.
+	mkdir -p /tmp/hclient-update
+	cp -f /usr/libexec/hclient-update /tmp/hclient-update/daemon.sh 2>/dev/null || return 0
+
+	procd_open_instance "hclient-update"
+	procd_set_param command /bin/sh /tmp/hclient-update/daemon.sh daemon
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}
