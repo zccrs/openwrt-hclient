@@ -84,6 +84,8 @@ uci commit hclient
 更新流程：GitHub API 查询最新 Release → 按本机 `uname -m` 匹配 `amd64/arm64/riscv64` 资产 → 下载 `hclient-cli_<版本>_<架构>.ipk` 与 `SHA256SUMS` → 校验通过后 `opkg install --force-reinstall` → 服务自动重启。更新过程中的日志可通过 `logread -e hclient-update` 查看，最近一次检查结果缓存在 `/etc/hclient/update.state`。
 
 > **注意**：`update_enabled='0'` 会同时关闭定时检查与自动安装（手动检查/更新仍可用）；自动更新需要路由器可直连 `github.com` 且系统时间正确（HTTPS 证书校验）。
+>
+> **关于 `resolve_conffiles` 提示**：升级时 opkg 会保留现有的 `/etc/config/hclient`。若输出 `resolve_conffiles ... The new conffile will be placed at /etc/config/hclient-opkg`，表示新默认配置被放到 `/etc/config/hclient-opkg`，升级本身已经成功，可直接忽略或删除该文件。
 
 ---
 

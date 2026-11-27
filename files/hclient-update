@@ -178,14 +178,35 @@ http_get() {
 	fi
 }
 
+# File downloads retry a few times: GitHub/TLS connections reset often enough
+# that a single attempt is not good enough for unattended updates.
+fetch_file() {
+	local url="$1"
+	local out="$2"
+	local i=0
+	rm -f "$out"
+	while [ "$i" -lt 3 ]; do
+		if http_get "$url" "$out" && [ -s "$out" ]; then
+			return 0
+		fi
+		i=$((i + 1))
+		[ "$i" -lt 3 ] && sleep 2
+	done
+	return 1
+}
+
+is_version() {
+	printf '%s' "$1" | grep -Eq '^v?[0-9]+(\.[0-9]+)*(-[0-9]+)?$'
+}
+
 fetch_latest_tag() {
-	local repo json html tag
+	local repo json html tag candidate
 	repo="$(repo_name)"
 
 	json="$(http_get "https://api.github.com/repos/$repo/releases/latest" "" 2>/dev/null)"
 	if [ -n "$json" ]; then
 		tag="$(printf '%s\n' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-		if [ -n "$tag" ]; then
+		if is_version "$tag"; then
 			printf '%s' "${tag#v}"
 			return 0
 		fi
@@ -194,11 +215,12 @@ fetch_latest_tag() {
 	# Fallback: read the redirect target of the /releases/latest page.
 	html="$(http_get "https://github.com/$repo/releases/latest" "" 2>/dev/null)"
 	if [ -n "$html" ]; then
-		tag="$(printf '%s\n' "$html" | sed -n 's|.*/releases/tag/\([^"/?]*\).*|\1|p' | head -n 1)"
-		if [ -n "$tag" ]; then
-			printf '%s' "${tag#v}"
-			return 0
-		fi
+		for candidate in $(printf '%s\n' "$html" | grep -o '/releases/tag/[^"/?]*' | sed 's|.*/releases/tag/||' | sort -u); do
+			if is_version "$candidate"; then
+				printf '%s' "${candidate#v}"
+				return 0
+			fi
+		done
 	fi
 
 	return 1
@@ -277,12 +299,12 @@ do_install() {
 	mkdir -p "$work" 2>/dev/null || true
 
 	log "downloading $base/$file"
-	if ! http_get "$base/$file" "$ipk" || [ ! -s "$ipk" ]; then
+	if ! fetch_file "$base/$file" "$ipk" || [ ! -s "$ipk" ]; then
 		INSTALL_OUT="下载失败：$base/$file"
 		return 1
 	fi
 
-	if ! http_get "$base/SHA256SUMS" "$work/SHA256SUMS" || [ ! -s "$work/SHA256SUMS" ]; then
+	if ! fetch_file "$base/SHA256SUMS" "$work/SHA256SUMS" || [ ! -s "$work/SHA256SUMS" ]; then
 		INSTALL_OUT="下载 SHA256SUMS 失败，已中止安装"
 		rm -f "$ipk"
 		return 1
@@ -339,6 +361,12 @@ do_install() {
 	CHK_AVAIL="false"
 	CHK_STATE="current"
 	write_state "$CHK_LATEST" "$CHK_CHECKED" "current" "已更新到 $CHK_INSTALLED"
+	case "$INSTALL_OUT" in
+		*resolve_conffiles*)
+			INSTALL_OUT="$INSTALL_OUT
+说明：上述 resolve_conffiles 提示不是错误。opkg 保留了现有 /etc/config/hclient，新默认配置位于 /etc/config/hclient-opkg（可删除，更新已成功）。"
+			;;
+	esac
 	return 0
 }
 
